@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const { Sim, Arm, Trajectory, staticPayloadTest, N, util } = require("./dynamics.js");
+const add3 = util.add, mv3 = util.mv;
 const model = JSON.parse(fs.readFileSync(path.join(__dirname, "model.json"), "utf8"));
 const refs = JSON.parse(fs.readFileSync(path.join(__dirname, "tools", "ref_cases.json"), "utf8"));
 const D = Math.PI / 180;
@@ -152,6 +153,54 @@ const pose = [-90, 0, 0, 88, 0, 0, 0].map((v) => v * D);
   for (let k = 0; k < 1000; k++) { c.step(1); if (k > 300 && k < 700) { gap += c.tauAct[3] - c.tauOut[3]; fr += c.cfg.viscous[3] * c.qd[3] + c.cfg.coulomb[3] * Math.tanh(c.qd[3] / c.cfg.vStick); n++; } }
   check("구동부 모델: 정지 토크 불변, 등속 시 (구동−출력) = 마찰", ds < 2e-3 && Math.abs(gap / n - fr / n) < 0.05,
     `(정지 차 ${ds.toExponential(1)}, 등속 차 ${(gap / n).toFixed(3)} vs 마찰 ${(fr / n).toFixed(3)} N·m)`);
+}
+// 12) 임의 자세: 충돌 없고 정지 토크 여유, 실제로 도달
+{
+  let seed = 7; const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const sim = new Sim(model); let ok = 0, worstErr = 0, sat = false, contact = false; const n = 12;
+  for (let k = 0; k < n; k++) {
+    const q = sim.randomPose(rand); if (!q) continue; ok++;
+    sim.setTarget(q);
+    for (let s2 = 0; s2 < 6000; s2++) { sim.step(1); sat = sat || sim.sat.some(Boolean); contact = contact || sim.contacts.length > 0; }
+    worstErr = Math.max(worstErr, maxAbs(Array.from(sim.q, (v, i) => v - q[i])));
+  }
+  check("임의 자세 12개: 생성·도달(오차 < 0.1°), 포화·접촉 없음", ok === n && worstErr < 0.1 * D && !sat && !contact, `(최대 오차 ${(worstErr / D).toFixed(4)}°, 포화 ${sat}, 접촉 ${contact})`);
+}
+// 13) 임피던스 제어: 외력 없으면 손 위치 유지, 일정한 외력에 δ = F/K
+{
+  const z7 = [0, 0, 0, 0, 0, 0, 0];
+  const sim = new Sim(model, { mode: "impedance", coulomb: z7, viscous: z7, impKt: 800, impKr: 30 }); sim.setPayload(1.0, [0.12, 0, 0], false); // 마찰 0에서 이론 비교
+  const q0 = [-50, -20, 20, 30, 20, 15, 10].map((v) => v * D); sim.reset(q0); sim.setTarget(q0);
+  sim.step(3000);
+  const hold = Math.hypot(...sim.imp.ex);
+  const x0 = sim.imp.x.slice();
+  sim.applyImpulse([20, 0, 0], 4.0, 6, null, "step"); sim.step(3000);
+  const dx = sim.imp.x[0] - x0[0], expect = 20 / sim.cfg.impKt;
+  check("임피던스(마찰 0): 무외력 유지 < 1 mm, 20 N 일정 외력에 변위 ≈ F/K", hold < 1e-3 && Math.abs(dx - expect) / expect < 0.15,
+    `(유지 오차 ${(hold * 1000).toFixed(3)} mm, 변위 ${(dx * 1000).toFixed(2)} mm vs ${(expect * 1000).toFixed(2)} mm)`);
+  sim.step(2000);
+  const back = Math.hypot(...sim.imp.ex);
+  check("임피던스: 외력 제거 후 복귀 < 1 mm", back < 1e-3, `(${(back * 1000).toFixed(3)} mm)`);
+}
+// 14) 충격 응답 + 강성 비교: 위치 제어 vs 임피던스
+{
+  const res = {};
+  const q0 = [-50, -20, 20, 30, 20, 15, 10].map((v) => v * D);
+  for (const mode of ["position", "impedance"]) {
+    const mk = () => { const sim = new Sim(model, { mode }); sim.reset(q0); sim.setTarget(q0); sim.step(2000); return sim; };
+    const tcpOf = (sim) => { const F = sim.arm.fk(sim.q); return add3(F[6].p, mv3(F[6].R, sim.tcpLocal())); };
+    let sim = mk(); const p0 = tcpOf(sim); let peak = 0, peakTau = 0, finite = true;
+    sim.applyImpulse([0, 150, 0], 0.03);
+    for (let k = 0; k < 3000; k++) { sim.step(1); const p = tcpOf(sim); peak = Math.max(peak, Math.hypot(p[0] - p0[0], p[1] - p0[1], p[2] - p0[2])); peakTau = Math.max(peakTau, maxAbs(sim.tauOut)); finite = finite && sim.q.every(Number.isFinite); }
+    const p1 = tcpOf(sim); const back = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+    sim = mk(); const a0 = tcpOf(sim); sim.applyImpulse([0, 10, 0], 3, 6, null, "step"); sim.step(2500);
+    const a1 = tcpOf(sim); const hold = Math.hypot(a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]);
+    res[mode] = { peak, back, peakTau, finite, hold };
+  }
+  console.log(`   150 N·30 ms 충격 최대 변위: 위치 ${(res.position.peak * 1000).toFixed(1)} mm / 임피던스 ${(res.impedance.peak * 1000).toFixed(1)} mm · 10 N 지속 외력 변위: 위치 ${(res.position.hold * 1000).toFixed(1)} mm / 임피던스 ${(res.impedance.hold * 1000).toFixed(1)} mm`);
+  check("충격 후 3 s 안에 복귀 (위치 < 1 mm, 임피던스 < 5 mm: 쿨롱 마찰 잔류), 발산 없음", res.position.finite && res.impedance.finite && res.position.back < 1e-3 && res.impedance.back < 5e-3,
+    `(${(res.position.back * 1000).toFixed(3)} / ${(res.impedance.back * 1000).toFixed(3)} mm)`);
+  check("지속 외력에 임피던스가 위치 제어보다 3배 이상 유연", res.impedance.hold > 3 * res.position.hold);
 }
 // 8) 성능
 {

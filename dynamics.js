@@ -61,6 +61,11 @@
     for (let j = 0; j < n; j++) { const e = new Float64Array(n); e[j] = 1; const c = cholSolve(A, e, n); for (let i = 0; i < n; i++) X[i * n + j] = c[i]; }
     return X;
   }
+  function invFull6(A) {
+    const X = new Float64Array(36);
+    for (let j = 0; j < 6; j++) { const e = new Float64Array(6); e[j] = 1; const col = cholSolve(A, e, 6); for (let i = 0; i < 6; i++) X[i * 6 + j] = col[i]; }
+    return X;
+  }
   function boundSphere(sp) {
     if (!sp.length) return [0, 0, 0, -1];
     let c = [0, 0, 0]; for (const s of sp) c = add(c, s); c = scl(c, 1 / sp.length);
@@ -72,7 +77,8 @@
    * 이산시간(1 ms)에서 불안정해진다. λmax ≤ lambdaMax 가 되도록 D를 일괄 축소한다.
    * 어떤 관절이 포화(개루프)돼도 남은 관절의 행렬은 주부분행렬이라 λ가 더 커지지 않는다. */
   function feedbackInertia(M, Minv, lambdaMax) {
-    const D = Array.from({ length: N }, (_, i) => M[i * N + i]);
+    // 관절별 '나머지 관절이 풀렸을 때의 유효관성' 1/(M⁻¹)ᵢᵢ 기준 → D½M⁻¹D½ 대각이 1 (가벼운 손목 때문에 어깨 게인이 깎이지 않음)
+    const D = Array.from({ length: N }, (_, i) => 1 / Minv[i * N + i]);
     const A = new Float64Array(N * N);
     for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) A[i * N + j] = Math.sqrt(D[i] * D[j]) * Minv[i * N + j];
     let v = new Float64Array(N).fill(1), lam = 0;
@@ -244,10 +250,12 @@
   // ---------- 시뮬레이터 ----------
   // 구동부 가정값(URDF에 없음): 반사관성 J [kg·m²], 점성 b [N·m·s/rad], 쿨롱 τc [N·m]
   const ACT_DEF = { J: [0.03, 0.025, 0.025, 0.025, 0.01, 0.01, 0.01], b: [1, 1, 1, 1, 0.5, 0.5, 0.5], tc: [1.0, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25] };
-  const DEF = { dt: 0.001, vmaxDeg: 60, amaxDeg: 240, wn: 40, zeta: 1, eMaxDeg: 10, edMax: 3, lambdaMax: 3,
+  const DEF = { dt: 0.001, vmaxDeg: 60, amaxDeg: 240, wn: 60, zeta: 1, eMaxDeg: 10, edMax: 3, lambdaMax: 3,
                 feedforward: true, payloadRamp: 1.0, logHz: 100, trailHz: 100, trailSec: 6,
                 armature: ACT_DEF.J.slice(), viscous: ACT_DEF.b.slice(), coulomb: ACT_DEF.tc.slice(), vStick: 0.02,
-                collision: true, contactMargin: 0.002, shoulderClear: 0.13 };
+                collision: true, contactMargin: 0.002, shoulderClear: 0.13,
+                // 제어 방식: "position"(관절 위치 추종) | "impedance"(손 끝 직교좌표 임피던스)
+                mode: "position", impKt: 300, impKr: 10, impZeta: 0.8, impKnull: 5, impDnull: 1, impEmax: 0.1, impRmax: 0.5 };
   const fric = (c, i, v) => c.viscous[i] * v + c.coulomb[i] * Math.tanh(v / c.vStick);
 
   class Sim {
@@ -366,6 +374,8 @@
       this.tauAct = new Float64Array(N); this.tauOut = new Float64Array(N); this.tauRaw = new Float64Array(N); this.tauLim = new Float64Array(N);
       this.sat = new Array(N).fill(false); this.satLatched = new Array(N).fill(false); this.satDur = 0;
       this.limHit = new Array(N).fill(false); this.contacts = []; this.contactForce = 0;
+      this.pulses = []; this.extForce = [0, 0, 0]; this.extPoint = null; this.tauExt = new Float64Array(N);
+      this.imp = { ex: [0, 0, 0], er: [0, 0, 0], F: [0, 0, 0], xd: null, x: null };
       this.traj.reset(this.q);
       this.clearRecords();
     }
@@ -381,6 +391,31 @@
       this.payloadTarget = kg; this.arm.payload.off = off.slice();
       if (!ramp || this.cfg.payloadRamp <= 0 || kg < this.payloadMass) this.payloadMass = kg; // 내려놓기는 즉시, 들기는 램프
       this.arm.setPayload(this.payloadMass, off);
+    }
+    // 링크 a 위의 월드 점 p 에 대한 위치 야코비안 (3×7, 행 우선)
+    pointJac(F, a, p) {
+      const J = [new Float64Array(N), new Float64Array(N), new Float64Array(N)];
+      for (let j = 0; j <= a; j++) { const c = cross(F[j].z, sub(p, F[j].p)); J[0][j] = c[0]; J[1][j] = c[1]; J[2][j] = c[2]; }
+      return J;
+    }
+    tcpLocal() { return this.arm.payload.off; }   // 손 기준점 = 손에 든 물체 무게중심 위치(손 좌표계)
+    /* 충격: 링크 link(0~6)의 국부점 off 에 월드 방향 force[N] 를 반-사인파로 dur[s] 동안 가함 (최대값 = |force|) */
+    applyImpulse(force, dur, link = N - 1, off = null, shape = "sine") {
+      this.pulses.push({ F: force.slice(), dur: Math.max(dur, 0.001), t0: this.t, link, shape, off: (off || (link === N - 1 ? this.tcpLocal() : [0, 0, 0])).slice() });
+    }
+    /* 임의 자세: 가동범위 안, 몸과 충돌 없음(여유 1 cm), 현재 하중으로 정지 토크 ≤ 한계의 frac */
+    randomPose(rand = Math.random, frac = 0.8, tries = 400) {
+      for (let k = 0; k < tries; k++) {
+        const q = Array.from({ length: N }, (_, i) => { const lo = this.arm.lower[i], hi = this.arm.upper[i], m = 0.08 * (hi - lo); return lo + m + (hi - lo - 2 * m) * rand(); });
+        const F = this.arm.fk(q);
+        const save = this.cfg.contactMargin; this.cfg.contactMargin = 0.01;
+        const hit = this._contacts(F).length > 0; this.cfg.contactMargin = save;
+        if (hit) continue;
+        const g = this.arm.gravityTorque(q);
+        if (g.some((v, i) => Math.abs(v) > frac * this.arm.effort[i])) continue;
+        return q;
+      }
+      return null;
     }
     step(nsteps = 1) {
       const c = this.cfg, dt = c.dt, kp = c.wn * c.wn, kd = 2 * c.zeta * c.wn, eMax = c.eMaxDeg * Math.PI / 180;
@@ -406,11 +441,61 @@
         }
         const Minv = invFull(M, N);
         const Dg = feedbackInertia(M, Minv, c.lambdaMax);
+        // ----- 외부 충격력 → 관절 일반화력 τext = Jpᵀ F -----
+        this.tauExt.fill(0); let Fsum = [0, 0, 0], Pext = null;
+        this.pulses = this.pulses.filter((pl) => this.t - pl.t0 <= pl.dur);
+        for (const pl of this.pulses) {
+          const sh = pl.shape === "step" ? 1 : Math.sin(Math.PI * (this.t - pl.t0) / pl.dur), f = scl(pl.F, Math.max(0, sh));
+          const p = add(F[pl.link].p, mv(F[pl.link].R, pl.off)), Jp = this.pointJac(F, pl.link, p);
+          for (let j = 0; j < N; j++) this.tauExt[j] += Jp[0][j] * f[0] + Jp[1][j] * f[1] + Jp[2][j] * f[2];
+          Fsum = add(Fsum, f); Pext = p;
+        }
+        this.extForce = Fsum; this.extPoint = Pext;
+        // ----- 임피던스 제어: τ = bias + Jᵀ[Kt·ex + Dt·ėx ; Kr·er + Dr·ėr] + 영공간 자세 유지 -----
+        let tauImp = null;
+        if (c.mode === "impedance") {
+          const tl = this.tcpLocal(), Fd = this.arm.fk(this.traj.q);
+          const xd = add(Fd[N - 1].p, mv(Fd[N - 1].R, tl)), x = add(F[N - 1].p, mv(F[N - 1].R, tl));
+          const Jv = this.pointJac(F, N - 1, x);
+          const Jw = [0, 1, 2].map((r) => Float64Array.from({ length: N }, (_, j) => F[j].z[r]));
+          const J6 = Jv.concat(Jw);
+          // 오차 (월드): 위치, 자세(축-각 벡터)
+          let ex = sub(xd, x); const nx = Math.hypot(...ex); if (nx > c.impEmax) ex = scl(ex, c.impEmax / nx);
+          const Re = mm(Fd[N - 1].R, tr(F[N - 1].R)); // R_d R^T
+          const ang = Math.acos(clamp((Re[0] + Re[4] + Re[8] - 1) / 2, -1, 1));
+          let er = [Re[7] - Re[5], Re[2] - Re[6], Re[3] - Re[1]];
+          er = ang < 1e-9 ? scl(er, 0.5) : scl(er, ang / (2 * Math.sin(ang)));
+          const nr = Math.hypot(...er); if (nr > c.impRmax) er = scl(er, c.impRmax / nr);
+          // 속도: 실제와 기준(J·v_ref)
+          const v6 = J6.map((row) => row.reduce((a, v, j) => a + v * this.qd[j], 0));
+          const vd6 = J6.map((row) => row.reduce((a, v, j) => a + v * this.traj.v[j], 0));
+          // 작업공간 관성 Λ = (J M⁻¹ Jᵀ)⁻¹ 대각 → 감쇠 D = 2ζ√(KΛ)
+          const A = new Float64Array(36);
+          for (let r = 0; r < 6; r++) for (let q2 = 0; q2 < 6; q2++) { let sm = 0; for (let i = 0; i < N; i++) { let t2 = 0; for (let j = 0; j < N; j++) t2 += Minv[i * N + j] * J6[q2][j]; sm += J6[r][i] * t2; } A[r * 6 + q2] = sm + (r === q2 ? 1e-6 : 0); }
+          const Lam = invFull6(A);
+          const K6 = [c.impKt, c.impKt, c.impKt, c.impKr, c.impKr, c.impKr];
+          const e6 = ex.concat(er);
+          const Fimp = K6.map((k, r) => k * e6[r] + 2 * c.impZeta * Math.sqrt(k * Math.max(Lam[r * 6 + r], 1e-6)) * (vd6[r] - v6[r]));
+          // 영공간 투영 N = I − Jᵀ (J Jᵀ + λI)⁻¹ J  (팔꿈치 등 남는 자유도를 기준 궤적 자세로 약하게)
+          const JJ = new Float64Array(36);
+          for (let r = 0; r < 6; r++) for (let q2 = 0; q2 < 6; q2++) { let sm = 0; for (let j = 0; j < N; j++) sm += J6[r][j] * J6[q2][j]; JJ[r * 6 + q2] = sm + (r === q2 ? 1e-4 : 0); }
+          const JJi = invFull6(JJ);
+          const tn = Array.from({ length: N }, (_, i) => c.impKnull * (this.traj.q[i] - this.q[i]) - c.impDnull * this.qd[i]);
+          const y = Array.from({ length: 6 }, (_, r) => J6[r].reduce((a, v, j) => a + v * tn[j], 0));
+          const z6 = Array.from({ length: 6 }, (_, r) => { let sm = 0; for (let q2 = 0; q2 < 6; q2++) sm += JJi[r * 6 + q2] * y[q2]; return sm; });
+          tauImp = new Float64Array(N);
+          for (let j = 0; j < N; j++) {
+            let t2 = bias[j] + tn[j];
+            for (let r = 0; r < 6; r++) t2 += J6[r][j] * (Fimp[r] - z6[r]);
+            tauImp[j] = t2;
+          }
+          this.imp = { ex, er, F: Fimp.slice(0, 3), xd, x };
+        } else this.imp = { ex: [0, 0, 0], er: [0, 0, 0], F: [0, 0, 0], xd: null, x: null };
         let anySat = false;
         for (let i = 0; i < N; i++) {
           const e = clamp(this.traj.q[i] - this.q[i], -eMax, eMax);
           const ed = clamp(this.traj.v[i] - this.qd[i], -c.edMax, c.edMax);
-          const raw = (c.feedforward ? ff[i] : 0) + Dg[i] * (kp * e + kd * ed);
+          const raw = tauImp ? tauImp[i] : (c.feedforward ? ff[i] : 0) + Dg[i] * (kp * e + kd * ed);
           this.tauRaw[i] = raw;
           this.sat[i] = Math.abs(raw) > this.arm.effort[i];
           this.tauAct[i] = clamp(raw, -this.arm.effort[i], this.arm.effort[i]);
@@ -418,7 +503,7 @@
         }
         this.satDur = anySat ? this.satDur + dt : 0;
         const rhs = new Float64Array(N);
-        for (let i = 0; i < N; i++) rhs[i] = this.tauAct[i] - fric(c, i, this.qd[i]) - bias[i];
+        for (let i = 0; i < N; i++) rhs[i] = this.tauAct[i] + this.tauExt[i] - fric(c, i, this.qd[i]) - bias[i];
         const qdd0 = cholSolve(M, rhs, N);
         const qPrev = Float64Array.from(this.q), qdPrev = Float64Array.from(this.qd), tPrev = this.t;
         for (let i = 0; i < N; i++) this.qd[i] += qdd0[i] * dt;
@@ -479,19 +564,21 @@
       if (t + 1e-12 >= this.nextLog) {
         this.nextLog = t + 1 / c.logHz;
         if (this.log.length < 3600 * c.logHz) this.log.push({ t, tgt: Array.from(this.traj.target), ref: Array.from(this.traj.q), q: Array.from(q), qd: Array.from(qd),
-          tau: Array.from(this.tauOut), raw: Array.from(this.tauRaw), sat: this.sat.slice(), arm: this.arm.armMass, pay: this.payloadMass, off: this.arm.payload.off.slice() });
+          tau: Array.from(this.tauOut), raw: Array.from(this.tauRaw), sat: this.sat.slice(), arm: this.arm.armMass, pay: this.payloadMass, off: this.arm.payload.off.slice(),
+          mode: this.cfg.mode, ext: this.extForce.slice(), cf: this.contactForce });
       }
     }
     trailWindow() { const k = this.cfg.trailSec * this.cfg.trailHz + 1; return this.trail.length > k ? this.trail.slice(-k) : this.trail; }
     csv() {
       const d = (r) => (r * 180 / Math.PI);
       const head = ["time_s", "joint", "target_deg", "traj_ref_deg", "actual_deg", "displacement_deg", "velocity_deg_s",
-        "output_torque_Nm", "cmd_torque_unclipped_Nm", "torque_limit_Nm", "saturated", "arm_mass_kg", "payload_kg", "payload_off_x_m", "payload_off_y_m", "payload_off_z_m"];
+        "output_torque_Nm", "cmd_torque_unclipped_Nm", "torque_limit_Nm", "saturated", "arm_mass_kg", "payload_kg", "payload_off_x_m", "payload_off_y_m", "payload_off_z_m",
+        "control_mode", "ext_force_x_N", "ext_force_y_N", "ext_force_z_N", "contact_force_max_N"];
       const rows = [head.join(",")];
       for (const r of this.log) for (let i = 0; i < N; i++) {
         rows.push([r.t.toFixed(4), this.names[i], d(r.tgt[i]).toFixed(4), d(r.ref[i]).toFixed(4), d(r.q[i]).toFixed(4), d(r.q[i] - this.ref[i]).toFixed(4),
           d(r.qd[i]).toFixed(4), r.tau[i].toFixed(5), r.raw[i].toFixed(5), this.arm.effort[i], r.sat[i] ? 1 : 0, r.arm.toFixed(5), r.pay.toFixed(5),
-          r.off[0], r.off[1], r.off[2]].join(","));
+          r.off[0], r.off[1], r.off[2], r.mode, r.ext[0].toFixed(3), r.ext[1].toFixed(3), r.ext[2].toFixed(3), r.cf.toFixed(2)].join(","));
       }
       return rows.join("\n");
     }

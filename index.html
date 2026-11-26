@@ -25,6 +25,7 @@ legend{color:var(--accent2);font-weight:600;font-size:12px;padding:0 4px}
 .j .rd.sat{color:#ff6b55;font-weight:700}
 .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0}
 .row label{flex:1;color:var(--text)}
+.row select{background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit}
 .row input[type=number]{width:92px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;text-align:right}
 .chk{display:flex;gap:6px;align-items:flex-start;margin:5px 0;color:var(--text)}
 .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
@@ -65,7 +66,32 @@ table.act input{width:58px;background:var(--soft);border:1px solid var(--rule);c
     <div class="btns">
       <button id="btnRef">기준 자세 복귀</button>
       <button id="btnExt">팔 뻗기 (시험 자세)</button>
+      <button class="primary" id="btnRand">랜덤 자세</button>
     </div>
+    <div class="row"><label class="chk" style="margin:0"><input type="checkbox" id="autoRand"> 자동 랜덤 — 도착 후 대기 [s]</label><input id="randWait" type="number" value="1.5" step="0.5" min="0"></div>
+    <div class="note">랜덤 자세: 가동범위 안 · 몸과 1 cm 이상 떨어짐 · 현재 하중으로 정지 토크가 한계의 80% 이하인 자세만 뽑음</div>
+  </fieldset>
+
+  <fieldset><legend>제어 방식</legend>
+    <label class="chk"><input type="radio" name="mode" value="position" checked> 위치 제어 — 관절 각도를 단단하게 추종</label>
+    <label class="chk"><input type="radio" name="mode" value="impedance"> 임피던스 제어 — 손 기준점이 스프링·댐퍼처럼 목표 자세에 매달림</label>
+    <div id="impBox">
+      <div class="row"><label for="impKt">병진 강성 K [N/m]</label><input id="impKt" type="number" value="300" step="50" min="0"></div>
+      <div class="row"><label for="impKr">회전 강성 Kr [N·m/rad]</label><input id="impKr" type="number" value="10" step="1" min="0"></div>
+      <div class="row"><label for="impZeta">감쇠비 ζ</label><input id="impZeta" type="number" value="0.8" step="0.1" min="0"></div>
+      <div class="row"><label for="impKn">여유자유도 자세 강성 [N·m/rad]</label><input id="impKn" type="number" value="5" step="1" min="0"></div>
+      <div class="btns"><button class="primary" id="btnImp">적용</button></div>
+      <div class="note">τ = 중력·코리올리 보상 + Jᵀ[K·Δx + D·Δẋ] + 영공간 자세 유지. 손 기준점 = 손에 든 물체 무게중심 위치. 목표 = 슬라이더 자세의 손 위치·방향(초록 반투명 구). 특이자세 근처에서는 강성이 그대로 나오지 않음.</div>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>충격 (외력 펄스)</legend>
+    <div class="row"><label for="impF">최대 힘 [N]</label><input id="impF" type="number" value="100" step="10" min="0"></div>
+    <div class="row"><label for="impT">지속 시간 [ms]</label><input id="impT" type="number" value="30" step="5" min="1"></div>
+    <div class="row"><label for="impDir">방향 (몸통 기준)</label><select id="impDir"><option value="0">앞 (+x)</option><option value="1">뒤 (−x)</option><option value="2">왼쪽 (+y)</option><option value="3" selected>오른쪽 (−y)</option><option value="4">위 (+z)</option><option value="5">아래 (−z)</option><option value="6">랜덤</option></select></div>
+    <div class="row"><label for="impAt">작용점</label><select id="impAt"><option value="6">손 기준점</option><option value="4">손목 관절</option><option value="3">팔꿈치 관절</option></select></div>
+    <div class="btns"><button class="primary" id="btnImpact">충격 주기</button></div>
+    <div class="note">반-사인파 힘 (충격량 = 2·F·T/π). 3D에 빨간 화살표로 표시. 위치 제어와 임피던스 제어에서 비교해 보세요.</div>
   </fieldset>
 
   <fieldset><legend>중량</legend>
@@ -117,7 +143,7 @@ table.act input{width:58px;background:var(--soft);border:1px solid var(--rule);c
 </main>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="dynamics.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<script src="dynamics.js?v=3"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

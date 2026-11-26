@@ -17,6 +17,7 @@
     $("srcInfo").innerHTML =
       `모델: <a style="color:#7d9cb8" href="${m.source.repo}" target="_blank" rel="noopener">unitree_ros</a> @ ${m.source.commit.slice(0, 7)} · ${m.source.file}<br>` +
       `전신 ${m.total_mass.toFixed(2)} kg · 골반 높이 ${m.base_height.toFixed(4)} m · 나머지 관절 0 rad 고정 · 접촉 없음 · BSD-3-Clause`;
+    window.__h2x = { get sim() { return sim; }, get arrow() { return arrow; }, get target() { return targetMesh; } }; // 점검용
     requestAnimationFrame(loop);
   }).catch((e) => { $("status").textContent = "model.json 불러오기 실패: " + e; });
 
@@ -39,6 +40,13 @@
     $("armMass0").textContent = `원본 7링크 합 ${sim.arm.armMass0.toFixed(4)} kg`;
     $("btnRef").onclick = () => setSliders([0, 0, 0, 0, 0, 0, 0]);
     $("btnExt").onclick = () => setSliders(EXT_POSE);
+    $("btnRand").onclick = randomPose;
+    // 제어 방식
+    document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener("change", applyImp));
+    $("btnImp").onclick = applyImp;
+    ["impKt", "impKr", "impZeta", "impKn"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") applyImp(); }));
+    $("btnImpact").onclick = impact;
+    applyImp();
     $("btnMass").onclick = applyMass;
     ["armMass", "payMass", "ox", "oy", "oz"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") applyMass(); }));
     $("btnCtrl").onclick = applyCtrl;
@@ -91,6 +99,43 @@
     if (renderer) updateBodyMeshes();
   }
   function countSpheres() { return model.links.reduce((a, l) => a + (l.spheres ? l.spheres.length : 0), 0); }
+  function randomPose() {
+    const q = sim.randomPose();
+    if (!q) { alert("조건(충돌 없음·토크 여유)을 만족하는 자세를 찾지 못했습니다. 하중을 줄여 보세요."); return; }
+    setSliders(q.map((v) => v / D));
+    randArrivedAt = null;
+  }
+  let randArrivedAt = null;
+  function autoRandomTick() {
+    if (!$("autoRand").checked || paused) return;
+    let arrived = true;
+    for (let i = 0; i < 7; i++) if (Math.abs(sim.traj.target[i] - sim.traj.q[i]) > 1e-6 || Math.abs(sim.traj.v[i]) > 1e-6) arrived = false;
+    if (!arrived) { randArrivedAt = null; return; }
+    if (randArrivedAt === null) randArrivedAt = sim.t;
+    if (sim.t - randArrivedAt >= (parseFloat($("randWait").value) || 0)) randomPose();
+  }
+  function applyImp() {
+    try {
+      const mode = document.querySelector('input[name=mode]:checked').value;
+      sim.cfg.mode = mode;
+      sim.cfg.impKt = num("impKt", 0); sim.cfg.impKr = num("impKr", 0); sim.cfg.impZeta = num("impZeta", 0); sim.cfg.impKnull = num("impKn", 0);
+      $("impBox").style.opacity = mode === "impedance" ? 1 : 0.45;
+      if (targetMesh) targetMesh.visible = mode === "impedance";
+    } catch (e) { alert(e.message); }
+  }
+  const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  function impact() {
+    try {
+      const f = num("impF", 0), T = num("impT", 1) / 1000, sel = +$("impDir").value, link = +$("impAt").value;
+      let d = sel < 6 ? DIRS[sel] : (() => { const v = [Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5], n = Math.hypot(...v); return v.map((x) => x / n); })();
+      // 몸통 기준 방향 → 월드
+      const R = sim.arm.torsoR; d = [R[0] * d[0] + R[1] * d[1] + R[2] * d[2], R[3] * d[0] + R[4] * d[1] + R[5] * d[2], R[6] * d[0] + R[7] * d[1] + R[8] * d[2]];
+      if (paused) togglePause();
+      sim.applyImpulse(d.map((x) => x * f), T, link, link === 6 ? null : [0, 0, 0]);
+      arrowHold = { until: performance.now() + 1200, F: d.map((x) => x * f), link };
+    } catch (e) { alert(e.message); }
+  }
+  let arrowHold = null;
   function setSliders(deg) { sliders.forEach((s, i) => { s.value = deg[i]; }); applyTargets(); }
   function applyTargets() { sim.setTarget(sliders.map((s) => +s.value * D)); }
   function num(id, min) {
@@ -149,7 +194,7 @@
   }
 
   // ------------------------------------------------------------------ 3D
-  let renderer, scene, camera, linkGroups = [], allGroups = [], colGroup = null, payloadMesh = null, view, bodyT = null;
+  let renderer, scene, camera, linkGroups = [], allGroups = [], colGroup = null, payloadMesh = null, view, bodyT = null, targetMesh = null, arrow = null;
   function updateBodyMeshes() {
     bodyT = sim.body.fk(sim.bodyQ, sim.q);
     allGroups.forEach((g, i) => { g.matrix.copy(mat4(bodyT[i].R, bodyT[i].p)); g.matrixWorldNeedsUpdate = true; });
@@ -181,6 +226,11 @@
     linkGroups = armLi.map((i) => allGroups[i]);
     payloadMesh = new THREE.Mesh(new THREE.SphereGeometry(0.03, 32, 16), new THREE.MeshStandardMaterial({ color: 0xe0642a, metalness: 0.2, roughness: 0.35 }));
     payloadMesh.position.set(0.12, 0, 0); payloadMesh.castShadow = true; linkGroups[6].add(payloadMesh);
+    // 임피던스 목표(손 기준점) 표시, 충격 화살표
+    targetMesh = new THREE.Mesh(new THREE.SphereGeometry(0.022, 24, 12), new THREE.MeshBasicMaterial({ color: 0x5fbf86, transparent: true, opacity: 0.55, depthWrite: false }));
+    targetMesh.visible = false; scene.add(targetMesh);
+    arrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.3, 0xff3b2a, 0.07, 0.04); arrow.visible = false; arrow.renderOrder = 10;
+    [arrow.line.material, arrow.cone.material].forEach((m) => { m.depthTest = false; m.transparent = true; }); scene.add(arrow);
     // 충돌 구 표시
     colGroup = new THREE.Group(); colGroup.visible = false; scene.add(colGroup);
     const sg = new THREE.SphereGeometry(1, 14, 10);
@@ -271,6 +321,13 @@
         h.matrix.copy(mat4(t.R, t.p)); h.matrixWorldNeedsUpdate = true;
       });
     }
+    if (sim.cfg.mode === "impedance" && sim.imp.xd) { targetMesh.visible = true; targetMesh.position.set(sim.imp.xd[0], sim.imp.xd[1], sim.imp.xd[2]); } else targetMesh.visible = false;
+    if (arrowHold && performance.now() < arrowHold.until) {
+      const l = arrowHold.link, off = l === 6 ? sim.tcpLocal() : [0, 0, 0];
+      const p = [0, 1, 2].map((k) => F[l].p[k] + F[l].R[3 * k] * off[0] + F[l].R[3 * k + 1] * off[1] + F[l].R[3 * k + 2] * off[2]);
+      const Fm = Math.hypot(...arrowHold.F), dir = new THREE.Vector3(...arrowHold.F).normalize(), len = 0.12 + 0.25 * Math.min(1, Fm / 300);
+      arrow.position.set(p[0] - dir.x * len, p[1] - dir.y * len, p[2] - dir.z * len); arrow.setDirection(dir); arrow.setLength(len, 0.07, 0.04); arrow.visible = true;
+    } else arrow.visible = false;
     const m = sim.payloadMass;
     payloadMesh.visible = m > 1e-6;
     payloadMesh.scale.setScalar(Math.max(0.5, Math.min(2.2, Math.cbrt(Math.max(m, 1e-6)))));
@@ -375,6 +432,7 @@
         stopMsg = `■ 자동 일시정지: ${names} 토크 한계 도달\n  하중을 줄이거나 자세를 바꾼 뒤 [재개]\n  (계속 보려면 '자동 일시정지' 해제)`;
       }
     }
+    autoRandomTick();
     render3D();
     if (now - lastUi > 50) { lastUi = now; updateUi(); }
     requestAnimationFrame(loop);
@@ -391,6 +449,8 @@
     if (stopMsg) lines.push(stopMsg);
     lines.push(`t ${sim.t.toFixed(2)} s · ${paused ? "정지" : "실시간"} · 하중 ${sim.payloadMass.toFixed(2)}/${sim.payloadTarget} kg · CSV ${sim.log.length}샘플`);
     lines.push(nsat ? `⚠ 토크 한계: ${sim.sat.map((s, i) => (s ? SHORT[i].slice(2) : "")).filter(Boolean).join(", ")} — 이 하중·자세는 버틸 수 없음` : "토크 한계 미도달");
+    if (sim.cfg.mode === "impedance") lines.push(`임피던스: 손 위치 오차 ${(Math.hypot(...sim.imp.ex) * 1000).toFixed(1)} mm · 자세 오차 ${(Math.hypot(...sim.imp.er) / D).toFixed(1)}° · 스프링 힘 ${Math.hypot(...sim.imp.F).toFixed(1)} N`);
+    if (Math.hypot(...sim.extForce) > 0.01) lines.push(`➜ 충격 외력 ${Math.hypot(...sim.extForce).toFixed(0)} N`);
     if (sim.contacts.length) {
       const by = {}; sim.contacts.forEach((c) => { const k = `${SHORT[sim.names.indexOf(c.link)].slice(2)} ↔ ${c.other.replace("_link", "").replace("right_", "오른 ").replace("left_", "왼 ")}`; by[k] = (by[k] || 0) + c.force; });
       lines.push("● 접촉: " + Object.entries(by).map(([k, f]) => `${k} ${f.toFixed(0)} N`).join(", "));
