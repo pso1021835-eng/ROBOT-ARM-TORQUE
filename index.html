@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>H2-X 오른팔 토크–각변위</title>
+<style>
+:root{--bg:#141414;--panel:#1c1c1d;--soft:#232324;--ink:#e4e4e4;--text:#d6d6d6;--mute:#8a8a8a;--rule:#2a2a2a;--brick:#c8371e;--ok:#5fbf86;--accent2:#7d9cb8;--warn:#c9962a}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 "Pretendard","Inter",system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;-webkit-font-smoothing:antialiased}
+.app{display:grid;grid-template-columns:380px 1fr;height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--rule);overflow-y:auto;padding:12px 14px 20px}
+main{display:grid;grid-template-rows:minmax(260px,44vh) 1fr;min-width:0}
+h1{font-size:15px;margin:0 0 2px;font-weight:700}
+.sub{color:var(--mute);font-size:11.5px;margin-bottom:10px}
+fieldset{border:1px solid var(--rule);border-radius:8px;margin:0 0 10px;padding:8px 10px 10px}
+legend{color:var(--accent2);font-weight:600;font-size:12px;padding:0 4px}
+.j{margin:4px 0 7px}
+.j .top{display:flex;justify-content:space-between;gap:6px;font-size:12px}
+.j .rng{color:var(--mute);font-size:11px}
+.j input[type=range]{width:100%;margin:2px 0 0;accent-color:var(--accent2)}
+.j .rd{font:11.5px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--text)}
+.j .rd.sat{color:#ff6b55;font-weight:700}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0}
+.row label{flex:1;color:var(--text)}
+.row input[type=number]{width:92px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;text-align:right}
+.chk{display:flex;gap:6px;align-items:flex-start;margin:5px 0;color:var(--text)}
+.btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+button{background:var(--soft);color:var(--ink);border:1px solid #3a3a3a;border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent2)}
+button.primary{background:#2d3b48;border-color:#4b6478}
+.note{color:var(--mute);font-size:11px;margin-top:4px}
+#status{font:11.5px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:var(--text);background:var(--soft);border-radius:6px;padding:7px 8px;margin-top:8px}
+#status.alert{color:#ff8a76;border:1px solid #6d2a20}
+#view{position:relative;background:#0f0f10;border-bottom:1px solid var(--rule)}
+#view canvas{display:block}
+#loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:13px}
+#plots{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:1fr 1fr;gap:6px;padding:6px;min-height:0}
+.pl{background:var(--panel);border:1px solid var(--rule);border-radius:6px;position:relative;min-height:0}
+.pl canvas{position:absolute;inset:0;width:100%;height:100%}
+.legend{font-size:11px;color:var(--mute);padding:8px 10px;line-height:1.55}
+.legend b{color:var(--text)}
+table.st{border-collapse:collapse;width:100%;font:11px ui-monospace,Menlo,Consolas,monospace;margin-top:6px}
+table.st td,table.st th{border-bottom:1px solid var(--rule);padding:2px 3px;text-align:right}
+table.st th{color:var(--mute);font-weight:500}
+table.st td:first-child,table.st th:first-child{text-align:left}
+.hint{position:absolute;left:8px;bottom:6px;color:var(--mute);font-size:11px;pointer-events:none}
+@media (max-width:900px){.app{grid-template-columns:1fr;height:auto}main{grid-template-rows:50vh auto}#plots{grid-template-columns:repeat(2,1fr);grid-template-rows:none;grid-auto-rows:220px}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <h1>H2-X 오른팔 토크–각변위</h1>
+  <div class="sub">Unitree H2-X 공식 URDF · 골반 고정 · 오른팔 7축만 구동</div>
+
+  <fieldset><legend>오른팔 7축 목표각 [°] · 목표 / 궤적 / 실제 · 출력축 토크</legend>
+    <div id="joints"></div>
+    <div class="btns">
+      <button id="btnRef">기준 자세 복귀</button>
+      <button id="btnExt">팔 뻗기 (시험 자세)</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>중량</legend>
+    <div class="row"><label for="armMass">오른팔 자체 총질량 [kg]<br><span class="note" id="armMass0"></span></label><input id="armMass" type="number" step="0.1" min="0.1"></div>
+    <div class="row"><label for="payMass">손에 든 물체 질량 [kg]</label><input id="payMass" type="number" step="0.1" min="0" value="0"></div>
+    <div class="row"><label for="ox">물체 무게중심 x [m] <span class="note">손 좌표계</span></label><input id="ox" type="number" step="0.01" value="0.12"></div>
+    <div class="row"><label for="oy">물체 무게중심 y [m]</label><input id="oy" type="number" step="0.01" value="0"></div>
+    <div class="row"><label for="oz">물체 무게중심 z [m]</label><input id="oz" type="number" step="0.01" value="0"></div>
+    <div class="btns"><button class="primary" id="btnMass">적용</button></div>
+    <div class="note" id="massInfo"></div>
+  </fieldset>
+
+  <fieldset><legend>추종 · 구동부 가정</legend>
+    <div class="row"><label for="vmax">최대 속도 [°/s]</label><input id="vmax" type="number" value="60" min="1"></div>
+    <div class="row"><label for="amax">최대 가속도 [°/s²]</label><input id="amax" type="number" value="240" min="1"></div>
+    <div class="row"><label for="damp">관절 점성 마찰 [N·m·s/rad]</label><input id="damp" type="number" value="1.0" step="0.1" min="0"></div>
+    <div class="row"><label for="arma">로터 반사관성 배율 [×]<br><span class="note">기본 0.03/0.025/…/0.01 kg·m²</span></label><input id="arma" type="number" value="1" step="0.1" min="0"></div>
+    <label class="chk"><input type="checkbox" id="ff" checked> 모델 기반 피드포워드 (중력·관성 보상)</label>
+    <label class="chk"><input type="checkbox" id="autoStop" checked> 토크 한계 0.3 s 이상 지속 시 자동 일시정지</label>
+    <label class="chk"><input type="checkbox" id="yfix"> 그래프 y축을 토크 한계로 고정</label>
+    <div class="btns"><button class="primary" id="btnCtrl">적용</button></div>
+  </fieldset>
+
+  <div class="btns">
+    <button id="btnPause">일시정지</button>
+    <button id="btnClear">기록 초기화</button>
+    <button id="btnCsv">CSV 저장</button>
+    <button id="btnStatic">정적 시험 0 / 1 kg</button>
+  </div>
+  <div id="status">불러오는 중…</div>
+  <div id="staticOut"></div>
+  <div class="note" id="srcInfo" style="margin-top:10px"></div>
+</aside>
+<main>
+  <div id="view"><div id="loading">3D 모델 불러오는 중…</div><div class="hint">드래그: 회전 · 오른쪽 드래그: 이동 · 휠: 확대</div></div>
+  <div id="plots"></div>
+</main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="dynamics.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
