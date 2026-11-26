@@ -3,7 +3,6 @@
   "use strict";
   const D = Math.PI / 180;
   const SHORT = ["1 어깨 pitch", "2 어깨 roll", "3 어깨 yaw", "4 팔꿈치", "5 손목 roll", "6 손목 pitch", "7 손목 yaw"];
-  const ARMA0 = [0.03, 0.025, 0.025, 0.025, 0.01, 0.01, 0.01];
   const EXT_POSE = [-90, 0, 0, 88, 0, 0, 0];
   const $ = (id) => document.getElementById(id);
   let model, sim, paused = false, stopMsg = "";
@@ -43,7 +42,14 @@
     $("btnMass").onclick = applyMass;
     ["armMass", "payMass", "ox", "oy", "oz"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") applyMass(); }));
     $("btnCtrl").onclick = applyCtrl;
-    ["vmax", "amax", "damp", "arma"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") applyCtrl(); }));
+    ["vmax", "amax"].forEach((id) => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") applyCtrl(); }));
+    buildActTable(H2XDyn.ACT_DEF);
+    $("btnActDef").onclick = () => { buildActTable(H2XDyn.ACT_DEF); applyCtrl(); };
+    $("btnActZero").onclick = () => { const z = [0, 0, 0, 0, 0, 0, 0]; buildActTable({ J: z, b: z, tc: z }); applyCtrl(); };
+    buildBodyControls();
+    $("col").onchange = () => { sim.cfg.collision = $("col").checked; };
+    $("showCol").onchange = () => { colGroup.visible = $("showCol").checked; };
+    $("colInfo").textContent = `구 ${countSpheres()}개로 근사 · 어깨 관절부(몸통 쪽 반경 ${(sim.cfg.shoulderClear * 100).toFixed(0)} cm)와 인접 링크는 제외 · 비탄성 접촉`;
     $("ff").onchange = applyCtrl;
     $("yfix").onchange = () => { yfix = $("yfix").checked; };
     $("btnPause").onclick = togglePause;
@@ -52,6 +58,39 @@
     $("btnStatic").onclick = runStatic;
     applyMass();
   }
+  function buildActTable(d) {
+    let h = "<tr><th>관절</th><th>J kg·m²</th><th>b</th><th>τc N·m</th></tr>";
+    for (let i = 0; i < 7; i++) h += `<tr><td>${SHORT[i]}</td><td><input data-k="J" data-i="${i}" type="number" step="0.005" min="0" value="${d.J[i]}"></td><td><input data-k="b" data-i="${i}" type="number" step="0.1" min="0" value="${d.b[i]}"></td><td><input data-k="tc" data-i="${i}" type="number" step="0.05" min="0" value="${d.tc[i]}"></td></tr>`;
+    $("actTable").innerHTML = h;
+  }
+  const BODY_UI = [["waist_yaw_joint", "허리 yaw"], ["waist_roll_joint", "허리 roll"], ["waist_pitch_joint", "허리 pitch"],
+    ["head_pitch_joint", "머리 pitch"], ["head_yaw_joint", "머리 yaw"],
+    ["left_shoulder_pitch_joint", "왼어깨 pitch"], ["left_shoulder_roll_joint", "왼어깨 roll"], ["left_shoulder_yaw_joint", "왼어깨 yaw"],
+    ["left_elbow_joint", "왼팔꿈치"], ["left_wrist_roll_joint", "왼손목 roll"], ["left_wrist_pitch_joint", "왼손목 pitch"], ["left_wrist_yaw_joint", "왼손목 yaw"]];
+  const bodySl = {};
+  function buildBodyControls() {
+    const lim = {}; model.body_joints.forEach((j) => { lim[j.name] = j; });
+    const box = $("bodyJoints");
+    BODY_UI.forEach(([n, label]) => {
+      const j = lim[n], el = document.createElement("div"); el.className = "bj";
+      el.innerHTML = `<span>${label}</span><input type="range" min="${(j.lower / D).toFixed(1)}" max="${(j.upper / D).toFixed(1)}" step="0.5" value="0"><span>0.0°</span>`;
+      box.appendChild(el);
+      const r = el.querySelector("input"), v = el.querySelectorAll("span")[1];
+      r.addEventListener("input", () => { v.textContent = (+r.value).toFixed(1) + "°"; applyBody(); });
+      bodySl[n] = { r, v };
+    });
+    const setB = (o) => { Object.entries(bodySl).forEach(([n, x]) => { x.r.value = o[n] || 0; x.v.textContent = (+x.r.value).toFixed(1) + "°"; }); applyBody(); };
+    $("btnBodyZero").onclick = () => setB({});
+    $("btnBodyLean").onclick = () => setB(Object.assign(curBody(), { waist_pitch_joint: 20 }));
+    $("btnLeftDown").onclick = () => setB(Object.assign(curBody(), { left_elbow_joint: 89 }));
+  }
+  function curBody() { const o = {}; Object.entries(bodySl).forEach(([n, x]) => { o[n] = +x.r.value; }); return o; }
+  function applyBody() {
+    const o = {}; Object.entries(curBody()).forEach(([n, v]) => { o[n] = v * D; });
+    sim.setBodyPose(o);
+    if (renderer) updateBodyMeshes();
+  }
+  function countSpheres() { return model.links.reduce((a, l) => a + (l.spheres ? l.spheres.length : 0), 0); }
   function setSliders(deg) { sliders.forEach((s, i) => { s.value = deg[i]; }); applyTargets(); }
   function applyTargets() { sim.setTarget(sliders.map((s) => +s.value * D)); }
   function num(id, min) {
@@ -72,9 +111,14 @@
   }
   function applyCtrl() {
     try {
-      const v = num("vmax", 0.1), a = num("amax", 0.1), d = num("damp", 0), ar = num("arma", 0);
-      sim.cfg.vmaxDeg = v; sim.cfg.amaxDeg = a; sim.cfg.damping = d;
-      sim.cfg.armature = ARMA0.map((x) => x * ar);
+      const v = num("vmax", 0.1), a = num("amax", 0.1);
+      const act = { J: [], b: [], tc: [] };
+      document.querySelectorAll("#actTable input").forEach((el) => {
+        const x = parseFloat(el.value); if (!(x >= 0)) throw new Error("구동부 값은 0 이상이어야 합니다");
+        act[el.dataset.k][+el.dataset.i] = x;
+      });
+      sim.cfg.vmaxDeg = v; sim.cfg.amaxDeg = a;
+      sim.cfg.armature = act.J; sim.cfg.viscous = act.b; sim.cfg.coulomb = act.tc;
       sim.cfg.feedforward = $("ff").checked;
       sim.applyLimits();
     } catch (e) { alert(e.message); }
@@ -95,8 +139,9 @@
     const off = [num("ox"), num("oy"), num("oz")];
     $("staticOut").innerHTML = '<div class="note">계산 중…</div>';
     setTimeout(() => {
-      const r = H2XDyn.staticPayloadTest(model, EXT_POSE.map((v) => v * D), 1.0, off, sim.arm.armMass);
-      let h = `<div class="note" style="margin-top:8px">팔 뻗은 자세(어깨 pitch −90°, 팔꿈치 +88°) · 1 kg @ 손 (${off.join(", ")}) m · 팔 ${sim.arm.armMass.toFixed(3)} kg<br>Δτ 이론 = −m·aᵢ·((c−pᵢ)×g), 하중 중력모멘트를 실제 관절축에 투영</div>`;
+      const r = H2XDyn.staticPayloadTest(model, EXT_POSE.map((v) => v * D), 1.0, off, sim.arm.armMass, sim.bodyQ,
+        { armature: sim.cfg.armature, viscous: sim.cfg.viscous, coulomb: sim.cfg.coulomb, collision: sim.cfg.collision });
+      let h = `<div class="note" style="margin-top:8px">팔 뻗은 자세(어깨 pitch −90°, 팔꿈치 +88°) · 1 kg @ 손 (${off.join(", ")}) m · 팔 ${sim.arm.armMass.toFixed(3)} kg · 현재 몸 자세<br>Δτ 이론 = −m·aᵢ·((c−pᵢ)×g), 하중 중력모멘트를 실제 관절축에 투영</div>`;
       h += '<table class="st"><tr><th>관절</th><th>τ 0kg</th><th>τ 1kg</th><th>Δτ 시뮬</th><th>Δτ 이론</th><th>추종오차°</th><th>포화</th></tr>';
       for (let i = 0; i < 7; i++) h += `<tr><td>${SHORT[i]}</td><td>${r.tau0[i].toFixed(3)}</td><td>${r.tau1[i].toFixed(3)}</td><td>${r.dsim[i].toFixed(4)}</td><td>${r.theory[i].toFixed(4)}</td><td>${(Math.max(Math.abs(r.track0[i]), Math.abs(r.track1[i])) / D).toExponential(0)}</td><td>${r.sat0[i] || r.sat1[i] ? "Y" : "N"}</td></tr>`;
       $("staticOut").innerHTML = h + "</table>";
@@ -104,7 +149,11 @@
   }
 
   // ------------------------------------------------------------------ 3D
-  let renderer, scene, camera, linkGroups = [], payloadMesh = null, view;
+  let renderer, scene, camera, linkGroups = [], allGroups = [], colGroup = null, payloadMesh = null, view, bodyT = null;
+  function updateBodyMeshes() {
+    bodyT = sim.body.fk(sim.bodyQ, sim.q);
+    allGroups.forEach((g, i) => { g.matrix.copy(mat4(bodyT[i].R, bodyT[i].p)); g.matrixWorldNeedsUpdate = true; });
+  }
   const orbit = { tgt: new THREE.Vector3(0.15, -0.2, 1.15), r: 2.1, az: -0.75, el: 0.2 };
   function init3D() {
     view = $("view");
@@ -126,29 +175,42 @@
     floor.receiveShadow = true; scene.add(floor);
     const grid = new THREE.GridHelper(6, 30, 0x34363a, 0x26282b); grid.rotation.x = Math.PI / 2; grid.position.z = 0.001; scene.add(grid);
 
-    for (let i = 0; i < 7; i++) { const g = new THREE.Group(); g.matrixAutoUpdate = false; scene.add(g); linkGroups.push(g); }
+    // 전신 링크별 그룹 (오른팔 7개는 매 프레임, 나머지는 몸 자세가 바뀔 때 갱신)
+    model.links.forEach(() => { const g = new THREE.Group(); g.matrixAutoUpdate = false; scene.add(g); allGroups.push(g); });
+    const armLi = model.joints.map((j) => model.links.findIndex((l) => l.name === j.child));
+    linkGroups = armLi.map((i) => allGroups[i]);
     payloadMesh = new THREE.Mesh(new THREE.SphereGeometry(0.03, 32, 16), new THREE.MeshStandardMaterial({ color: 0xe0642a, metalness: 0.2, roughness: 0.35 }));
     payloadMesh.position.set(0.12, 0, 0); payloadMesh.castShadow = true; linkGroups[6].add(payloadMesh);
-
-    const all = model.static_meshes.concat(model.arm_meshes);
+    // 충돌 구 표시
+    colGroup = new THREE.Group(); colGroup.visible = false; scene.add(colGroup);
+    const sg = new THREE.SphereGeometry(1, 14, 10);
+    const matArm = new THREE.MeshBasicMaterial({ color: 0x5fbf86, transparent: true, opacity: 0.28, depthWrite: false });
+    const matBody = new THREE.MeshBasicMaterial({ color: 0xc9962a, transparent: true, opacity: 0.18, depthWrite: false });
+    const armSet = new Set(armLi);
+    model.links.forEach((l, li) => (l.spheres || []).forEach((sp) => {
+      const m = new THREE.Mesh(sg, armSet.has(li) ? matArm : matBody); m.position.set(sp[0], sp[1], sp[2]); m.scale.setScalar(sp[3]);
+      const holder = new THREE.Group(); holder.matrixAutoUpdate = false; holder.add(m); holder.userData.li = li; colGroup.add(holder);
+    }));
+    const all = [];
+    model.links.forEach((l, li) => l.meshes.forEach((m) => all.push(Object.assign({ li, arm: armSet.has(li) }, m))));
     let done = 0;
     all.forEach((m) => {
       fetch("meshes/" + m.file).then((r) => r.arrayBuffer()).then((buf) => {
         const geo = parseSTL(buf);
-        const arm = m.link !== undefined;
         const col = new THREE.Color(m.rgba[0], m.rgba[1], m.rgba[2]);
-        if (arm) col.lerp(new THREE.Color(0x9fc3e6), 0.35);
-        const mat = new THREE.MeshStandardMaterial({ color: col, metalness: arm ? 0.55 : 0.35, roughness: arm ? 0.32 : 0.45 });
+        if (m.arm) col.lerp(new THREE.Color(0x9fc3e6), 0.35);
+        const mat = new THREE.MeshStandardMaterial({ color: col, metalness: m.arm ? 0.55 : 0.35, roughness: m.arm ? 0.32 : 0.45 });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false;
-        mesh.matrix.copy(mat4(m.R, m.p)); mesh.matrixWorldNeedsUpdate = true;
-        (arm ? linkGroups[m.link] : scene).add(mesh);
+        mesh.matrix.copy(mat4(m.R, m.p));
+        allGroups[m.li].add(mesh);
       }).catch(() => {}).finally(() => {
         done++;
         $("loading").textContent = `3D 모델 불러오는 중… ${done}/${all.length}`;
         if (done === all.length) $("loading").style.display = "none";
       });
     });
+    updateBodyMeshes();
     setupOrbit(renderer.domElement);
     window.addEventListener("resize", resize); resize();
   }
@@ -201,6 +263,14 @@
   function render3D() {
     const F = sim.arm.fk(sim.q);
     F.forEach((f, i) => { linkGroups[i].matrix.copy(mat4(f.R, f.p)); linkGroups[i].matrixWorldNeedsUpdate = true; });
+    if (colGroup.visible) {
+      const armLiMap = new Map(); linkGroups.forEach((g, i) => armLiMap.set(allGroups.indexOf(g), i));
+      colGroup.children.forEach((h) => {
+        const li = h.userData.li, ai = armLiMap.get(li);
+        const t = ai !== undefined ? F[ai] : bodyT[li];
+        h.matrix.copy(mat4(t.R, t.p)); h.matrixWorldNeedsUpdate = true;
+      });
+    }
     const m = sim.payloadMass;
     payloadMesh.visible = m > 1e-6;
     payloadMesh.scale.setScalar(Math.max(0.5, Math.min(2.2, Math.cbrt(Math.max(m, 1e-6)))));
@@ -222,7 +292,7 @@
     }
     const lg = document.createElement("div"); lg.className = "pl legend";
     lg.innerHTML = `<b>가로</b> 기준 자세(URDF 영점) 대비 실제 각변위 [°]<br><b>세로</b> 감속기 출력축 토크 [N·m]<br>
-      = 관절 구동토크 − 로터 반사관성×각가속도 (정지 시 동일)<br><br>
+      = 구동토크 − 로터 반사관성×각가속도 − 구동부 마찰 (링크에 전달되는 토크)<br><br>
       궤적: <span style="color:#3b5b7a">어두움=과거</span> → <span style="color:#9fd0ff">밝음=최근</span> (최근 6 s)<br>
       <span style="color:#ff5a45">●</span> 현재 &nbsp; <span style="color:#5fbf86">┆</span> 목표각 &nbsp; <span style="color:#ff5a45">┄</span> 토크 한계(URDF effort)<br>
       제목이 빨갛고 SAT = 명령이 한계에서 잘림`;
@@ -321,6 +391,11 @@
     if (stopMsg) lines.push(stopMsg);
     lines.push(`t ${sim.t.toFixed(2)} s · ${paused ? "정지" : "실시간"} · 하중 ${sim.payloadMass.toFixed(2)}/${sim.payloadTarget} kg · CSV ${sim.log.length}샘플`);
     lines.push(nsat ? `⚠ 토크 한계: ${sim.sat.map((s, i) => (s ? SHORT[i].slice(2) : "")).filter(Boolean).join(", ")} — 이 하중·자세는 버틸 수 없음` : "토크 한계 미도달");
+    if (sim.contacts.length) {
+      const by = {}; sim.contacts.forEach((c) => { const k = `${SHORT[sim.names.indexOf(c.link)].slice(2)} ↔ ${c.other.replace("_link", "").replace("right_", "오른 ").replace("left_", "왼 ")}`; by[k] = (by[k] || 0) + c.force; });
+      lines.push("● 접촉: " + Object.entries(by).map(([k, f]) => `${k} ${f.toFixed(0)} N`).join(", "));
+      if (nsat) lines.push("  → 목표 자세가 몸에 막혀 팔이 밀어붙이는 중 (목표각을 몸 밖으로)");
+    }
     $("status").textContent = lines.join("\n");
     $("status").className = nsat || stopMsg ? "alert" : "";
   }

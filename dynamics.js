@@ -61,6 +61,12 @@
     for (let j = 0; j < n; j++) { const e = new Float64Array(n); e[j] = 1; const c = cholSolve(A, e, n); for (let i = 0; i < n; i++) X[i * n + j] = c[i]; }
     return X;
   }
+  function boundSphere(sp) {
+    if (!sp.length) return [0, 0, 0, -1];
+    let c = [0, 0, 0]; for (const s of sp) c = add(c, s); c = scl(c, 1 / sp.length);
+    let r = 0; for (const s of sp) r = Math.max(r, Math.hypot(s[0] - c[0], s[1] - c[1], s[2] - c[2]) + s[3]);
+    return [c[0], c[1], c[2], r];
+  }
   /* 관절별 독립 피드백의 관성 스케일 D.
    * 기본은 diag(M). 폐루프는 q̈ = M⁻¹·D·(Kp e + Kd ė) 이므로 λ = eig(D½ M⁻¹ D½)가 클수록
    * 이산시간(1 ms)에서 불안정해진다. λmax ≤ lambdaMax 가 되도록 D를 일괄 축소한다.
@@ -209,28 +215,157 @@
     handPoint(q, off) { const F = this.fk(q); return add(F[N - 1].p, mv(F[N - 1].R, off)); }
   }
 
+  // ---------- 전신 순기구학 (몸 자세 · 충돌 구) ----------
+  class Body {
+    constructor(model) {
+      this.links = model.links;
+      this.idx = {}; this.links.forEach((l, i) => { this.idx[l.name] = i; });
+      this.armJointIndex = {}; model.joints.forEach((j, i) => { this.armJointIndex[j.name] = i; });
+      this.base = [0, 0, model.base_height];
+    }
+    // qBody: {관절이름: rad}, qArm: 오른팔 7축 → 링크별 {R, p}
+    fk(qBody, qArm) {
+      const T = new Array(this.links.length);
+      this.links.forEach((l, i) => {
+        if (!l.joint) { T[i] = { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: this.base.slice() }; return; }
+        const P = T[this.idx[l.parent]], j = l.joint;
+        let R = mm(P.R, j.R0);
+        if (j.type === "revolute" || j.type === "continuous") {
+          const ai = this.armJointIndex[j.name];
+          const q = ai !== undefined ? (qArm ? qArm[ai] : 0) : (qBody[j.name] || 0);
+          R = mm(R, axisAngle(j.axis, q));
+        }
+        T[i] = { R, p: add(P.p, mv(P.R, j.xyz)) };
+      });
+      return T;
+    }
+  }
+
   // ---------- 시뮬레이터 ----------
+  // 구동부 가정값(URDF에 없음): 반사관성 J [kg·m²], 점성 b [N·m·s/rad], 쿨롱 τc [N·m]
+  const ACT_DEF = { J: [0.03, 0.025, 0.025, 0.025, 0.01, 0.01, 0.01], b: [1, 1, 1, 1, 0.5, 0.5, 0.5], tc: [1.0, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25] };
   const DEF = { dt: 0.001, vmaxDeg: 60, amaxDeg: 240, wn: 40, zeta: 1, eMaxDeg: 10, edMax: 3, lambdaMax: 3,
-                feedforward: true, payloadRamp: 1.0, armature: [0.03, 0.025, 0.025, 0.025, 0.01, 0.01, 0.01], logHz: 100, trailHz: 100, trailSec: 6, damping: 1.0 };
+                feedforward: true, payloadRamp: 1.0, logHz: 100, trailHz: 100, trailSec: 6,
+                armature: ACT_DEF.J.slice(), viscous: ACT_DEF.b.slice(), coulomb: ACT_DEF.tc.slice(), vStick: 0.02,
+                collision: true, contactMargin: 0.002, shoulderClear: 0.13 };
+  const fric = (c, i, v) => c.viscous[i] * v + c.coulomb[i] * Math.tanh(v / c.vStick);
 
   class Sim {
     constructor(model, cfg = {}) {
       this.cfg = Object.assign({}, DEF, cfg);
+      ["armature", "viscous", "coulomb"].forEach((k) => { this.cfg[k] = this.cfg[k].slice(); });
+      this.model = model;
       this.arm = new Arm(model);
+      this.body = new Body(model);
       this.n = N;
       this.names = model.joints.map((j) => j.name);
       this.ref = new Float64Array(N);
       this.traj = new Trajectory(this.ref, this.arm.lower, this.arm.upper);
       this.payloadTarget = 0; this.payloadMass = 0;
+      this.bodyQ = {};
+      this._setupCollision();
+      this.setBodyPose({});
       this.reset();
       this.applyLimits();
+    }
+    // ----- 몸 자세 (허리·머리·왼팔·다리; 골반 고정) -----
+    setBodyPose(qBody) {
+      this.bodyQ = Object.assign({}, qBody);
+      const T = this.body.fk(this.bodyQ, null);
+      const t = T[this.body.idx[this.model.torso_link]];
+      this.arm.torsoR = t.R; this.arm.torsoP = t.p;
+      this.bodyT = T;
+      this._bodySpheresWorld(T);
+    }
+    // ----- 충돌: 오른팔(+손 하중) 구 vs 몸 구, 오른팔 자기충돌 -----
+    _setupCollision() {
+      const B = this.body, armIdx = this.model.joints.map((j) => B.idx[j.child]);
+      this.armLinkIdx = armIdx;
+      const isArm = new Set(armIdx);
+      this.armSph = armIdx.map((li) => (B.links[li].spheres || []).map((s) => s.slice()));
+      this.bodyLinks = B.links.map((l, i) => i).filter((i) => !isArm.has(i) && (B.links[i].spheres || []).length);
+      // 어깨 관절 하우징: 몸통 구 중 오른어깨 pitch 관절 원점에서 shoulderClear 이내는 오른팔 충돌에서 제외
+      const tl = B.idx[this.model.torso_link], sp0 = this.model.joints[0].xyz;
+      this.torsoKeep = B.links[tl].spheres.map((s) => Math.hypot(s[0] - sp0[0], s[1] - sp0[1], s[2] - sp0[2]) > this.cfg.shoulderClear);
+      this.torsoIdx = tl;
+      // 기준 자세(모두 0)에서 이미 겹치는 링크 쌍은 관절부 겹침으로 보고 제외
+      const T0 = B.fk({}, new Float64Array(N));
+      const W = (li, s, T) => { const t = T[li]; const c = add(t.p, mv(t.R, s)); return [c[0], c[1], c[2], s[3]]; };
+      const sphOf = (li) => B.links[li].spheres.filter((s, k) => li !== tl || this.torsoKeep[k]);
+      const overlap = (la, lb, T) => {
+        for (const a of sphOf(la)) { const A = W(la, a, T);
+          for (const b of sphOf(lb)) { const Bb = W(lb, b, T);
+            if (Math.hypot(A[0] - Bb[0], A[1] - Bb[1], A[2] - Bb[2]) < A[3] + Bb[3]) return true; } }
+        return false;
+      };
+      this.excl = new Set();
+      for (let a = 0; a < N; a++) {
+        for (const lb of this.bodyLinks) if (overlap(armIdx[a], lb, T0)) this.excl.add(`${a}|b${lb}`);
+        for (let b = 0; b < a; b++) if (a - b <= 1 || overlap(armIdx[a], armIdx[b], T0)) this.excl.add(`${a}|a${b}`);
+      }
+      this.excludedPairs = Array.from(this.excl).map((k) => { const [a, r] = k.split("|");
+        return `${this.names[+a]} ↔ ${r[0] === "b" ? B.links[+r.slice(1)].name : this.names[+r.slice(1)]}`; });
+    }
+    _bodySpheresWorld(T) {
+      this.bodyW = this.bodyLinks.map((li) => {
+        const t = T[li], src = this.body.links[li].spheres.filter((s, k) => li !== this.torsoIdx || this.torsoKeep[k]);
+        const sp = src.map((s) => { const c = add(t.p, mv(t.R, s)); return [c[0], c[1], c[2], s[3]]; });
+        return { li, sp, bound: boundSphere(sp) };
+      });
+    }
+    _armSpheresWorld(F) {
+      const out = this.armSph.map((list, a) => list.map((s) => { const c = add(F[a].p, mv(F[a].R, s)); return [c[0], c[1], c[2], s[3]]; }));
+      if (this.payloadMass > 1e-6) { // 손 하중 구 (화면과 같은 크기)
+        const r = 0.03 * Math.max(0.5, Math.min(2.2, Math.cbrt(this.payloadMass)));
+        const c = add(F[N - 1].p, mv(F[N - 1].R, this.arm.payload.off)); out[N - 1] = out[N - 1].concat([[c[0], c[1], c[2], r]]);
+      }
+      return out;
+    }
+    _contacts(F) {
+      const arm = this._armSpheresWorld(F), bounds = arm.map(boundSphere), res = [], m0 = this.cfg.contactMargin;
+      const pairs = (a, A, Blist, key, other, Cb) => {
+        let found = [];
+        for (const s of A) {
+          if (Cb) { const ex = s[0] - Cb[0], ey = s[1] - Cb[1], ez = s[2] - Cb[2], rr = s[3] + Cb[3] + m0; if (ex * ex + ey * ey + ez * ez > rr * rr) continue; }
+          for (const t of Blist) {
+          const dx = s[0] - t[0], dy = s[1] - t[1], dz = s[2] - t[2], r2 = s[3] + t[3] + m0, q2 = dx * dx + dy * dy + dz * dz;
+          if (q2 > r2 * r2) continue;
+          const dist = Math.sqrt(q2), d = dist - s[3] - t[3];
+          if (d < m0) found.push({ d, n: dist > 1e-9 ? [dx / dist, dy / dist, dz / dist] : [0, 0, 1], pa: [s[0] - dx / dist * s[3], s[1] - dy / dist * s[3], s[2] - dz / dist * s[3]], pb: [t[0] + dx / dist * t[3], t[1] + dy / dist * t[3], t[2] + dz / dist * t[3]] });
+        }
+        }
+        found.sort((x, y) => x.d - y.d);
+        for (const f of found.slice(0, 4)) res.push(Object.assign(f, { a, other, key }));
+      };
+      for (let a = 0; a < N; a++) {
+        if (!arm[a].length) continue;
+        for (const bw of this.bodyW) {
+          if (this.excl.has(`${a}|b${bw.li}`)) continue;
+          const B = bounds[a], C = bw.bound;
+          if (Math.hypot(B[0] - C[0], B[1] - C[1], B[2] - C[2]) > B[3] + C[3] + m0) continue;
+          pairs(a, arm[a], bw.sp, this.body.links[bw.li].name, -1, C);
+        }
+        for (let b = 0; b < a; b++) {
+          if (this.excl.has(`${a}|a${b}`) || !arm[b].length) continue;
+          const B = bounds[a], C = bounds[b];
+          if (Math.hypot(B[0] - C[0], B[1] - C[1], B[2] - C[2]) > B[3] + C[3] + m0) continue;
+          pairs(a, arm[a], arm[b], this.names[b], b, C);
+        }
+      }
+      // 야코비안 행: n·(v_a(p) − v_b(p))
+      for (const c of res) {
+        c.J = new Float64Array(N);
+        for (let j = 0; j <= c.a; j++) c.J[j] += dot(c.n, cross(F[j].z, sub(c.pa, F[j].p)));
+        if (c.other >= 0) for (let j = 0; j <= c.other; j++) c.J[j] -= dot(c.n, cross(F[j].z, sub(c.pb, F[j].p)));
+      }
+      return res;
     }
     reset(q) {
       q = q || this.ref;
       this.q = Float64Array.from(q); this.qd = new Float64Array(N); this.t = 0;
       this.tauAct = new Float64Array(N); this.tauOut = new Float64Array(N); this.tauRaw = new Float64Array(N); this.tauLim = new Float64Array(N);
       this.sat = new Array(N).fill(false); this.satLatched = new Array(N).fill(false); this.satDur = 0;
-      this.limHit = new Array(N).fill(false);
+      this.limHit = new Array(N).fill(false); this.contacts = []; this.contactForce = 0;
       this.traj.reset(this.q);
       this.clearRecords();
     }
@@ -244,7 +379,7 @@
     setArmMass(kg) { this.arm.setArmMass(kg); }
     setPayload(kg, off, ramp = true) {
       this.payloadTarget = kg; this.arm.payload.off = off.slice();
-      if (!ramp || this.cfg.payloadRamp <= 0) this.payloadMass = kg;
+      if (!ramp || this.cfg.payloadRamp <= 0 || kg < this.payloadMass) this.payloadMass = kg; // 내려놓기는 즉시, 들기는 램프
       this.arm.setPayload(this.payloadMass, off);
     }
     step(nsteps = 1) {
@@ -258,22 +393,24 @@
         }
         this.traj.step(dt);
         const F = this.arm.fk(this.q);
-        const M = this.arm.massMatrix(this.q, F);
-        for (let i = 0; i < N; i++) M[i * N + i] += c.armature[i];   // 모터 로터 반사관성 (감속기 입력측)
+        const Ml = this.arm.massMatrix(this.q, F);            // 링크(출력축 쪽) 질량행렬
         const bias = this.arm.rnea(this.q, this.qd, new Float64Array(N), true, F);
-        // 피드포워드: 실제 자세에서 '기준 궤적'의 속도·가속도로 계산한 역동역학
-        // (실제 속도의 코리올리를 되먹이지 않음 → 과부하로 팔이 처질 때 증폭 없음)
-        const ffTraj = this.arm.rnea(this.q, this.traj.v, this.traj.a, true, F);
+        // 피드포워드: 실제 자세에서 기준 궤적 속도·가속도의 역동역학 + 구동부(반사관성·마찰) 보상
+        const ff = this.arm.rnea(this.q, this.traj.v, this.traj.a, true, F);
+        for (let i = 0; i < N; i++) ff[i] += c.armature[i] * this.traj.a[i] + fric(c, i, this.traj.v[i]);
+        // 구동부 포함 질량행렬 + 마찰의 암시적 선형화(안정): (Ml + J + dt·C) q̈ = τ − τf(q̇) − bias
+        const M = Float64Array.from(Ml);
+        for (let i = 0; i < N; i++) {
+          const ch = Math.cosh(this.qd[i] / c.vStick);
+          M[i * N + i] += c.armature[i] + dt * (c.viscous[i] + c.coulomb[i] / c.vStick / (ch * ch));
+        }
         const Minv = invFull(M, N);
-        const Md = Array.from({ length: N }, (_, i) => Minv[i * N + i]);
         const Dg = feedbackInertia(M, Minv, c.lambdaMax);
-        for (let i = 0; i < N; i++) ffTraj[i] += c.armature[i] * this.traj.a[i] + c.damping * this.traj.v[i];
         let anySat = false;
         for (let i = 0; i < N; i++) {
           const e = clamp(this.traj.q[i] - this.q[i], -eMax, eMax);
           const ed = clamp(this.traj.v[i] - this.qd[i], -c.edMax, c.edMax);
-          const fb = Dg[i] * (kp * e + kd * ed);
-          const raw = c.feedforward ? ffTraj[i] + fb : fb;
+          const raw = (c.feedforward ? ff[i] : 0) + Dg[i] * (kp * e + kd * ed);
           this.tauRaw[i] = raw;
           this.sat[i] = Math.abs(raw) > this.arm.effort[i];
           this.tauAct[i] = clamp(raw, -this.arm.effort[i], this.arm.effort[i]);
@@ -281,18 +418,25 @@
         }
         this.satDur = anySat ? this.satDur + dt : 0;
         const rhs = new Float64Array(N);
-        for (let i = 0; i < N; i++) rhs[i] = this.tauAct[i] - c.damping * this.qd[i] - bias[i];
-        const qdd = cholSolve(M, rhs, N);
+        for (let i = 0; i < N; i++) rhs[i] = this.tauAct[i] - fric(c, i, this.qd[i]) - bias[i];
+        const qdd0 = cholSolve(M, rhs, N);
         const qPrev = Float64Array.from(this.q), qdPrev = Float64Array.from(this.qd), tPrev = this.t;
-        for (let i = 0; i < N; i++) this.qd[i] += qdd[i] * dt;
-        // 가동범위 = 기계식 스토퍼: 다음 위치가 범위를 넘으면 그 관절 속도를 충격량으로 멈춘다
-        // (비탄성, 질량행렬로 결합된 다른 관절에도 반작용 반영 · 투영 가우스–자이델)
+        for (let i = 0; i < N; i++) this.qd[i] += qdd0[i] * dt;
+
+        // ----- 제약: 가동범위 스토퍼 + 접촉 (비탄성 충격량, 투영 가우스–자이델) -----
         const lam = new Float64Array(N);
         this.limHit.fill(false);
-        for (let it = 0; it < 6; it++) {
+        const cons = c.collision ? this._contacts(F) : [];
+        for (const k of cons) { // 유효질량 w = J M⁻¹ Jᵀ, MJ = M⁻¹ Jᵀ
+          k.MJ = new Float64Array(N);
+          for (let i = 0; i < N; i++) { let s2 = 0; for (let j = 0; j < N; j++) s2 += Minv[i * N + j] * k.J[j]; k.MJ[i] = s2; }
+          k.w = 0; for (let i = 0; i < N; i++) k.w += k.J[i] * k.MJ[i];
+          k.lam = 0;
+        }
+        for (let it = 0; it < 10; it++) {
           for (let i = 0; i < N; i++) {
             const lo = this.arm.lower[i], hi = this.arm.upper[i], qn = this.q[i] + this.qd[i] * dt;
-            const upperSide = this.q[i] > (lo + hi) / 2;   // 가까운 쪽 스토퍼
+            const upperSide = this.q[i] > (lo + hi) / 2;
             let vStar = null;
             if (upperSide && (qn > hi || lam[i] < 0)) vStar = Math.max((hi - this.q[i]) / dt, -0.2);
             else if (!upperSide && (qn < lo || lam[i] > 0)) vStar = Math.min((lo - this.q[i]) / dt, 0.2);
@@ -302,11 +446,22 @@
             d = newLam - lam[i]; lam[i] = newLam;
             if (d !== 0) for (let k = 0; k < N; k++) this.qd[k] += Minv[k * N + i] * d;
           }
+          for (const k of cons) {
+            if (k.w < 1e-12) continue;
+            let vn = 0; for (let i = 0; i < N; i++) vn += k.J[i] * this.qd[i];
+            const vStar = k.d >= 0 ? -k.d / dt : Math.min(-0.2 * k.d / dt, 0.3); // 침투 시 서서히 밀어냄
+            const nl = Math.max(0, k.lam + (vStar - vn) / k.w), d = nl - k.lam; k.lam = nl;
+            if (d !== 0) for (let i = 0; i < N; i++) this.qd[i] += k.MJ[i] * d;
+          }
         }
+        let fmax = 0; for (const k of cons) fmax = Math.max(fmax, k.lam / dt);
+        this.contacts = cons.filter((k) => k.lam > 0).map((k) => ({ link: this.names[k.a], other: k.key, force: k.lam / dt, depth: k.d }));
+        this.contactForce = fmax;
         for (let i = 0; i < N; i++) {
           this.tauLim[i] = lam[i] / dt; this.limHit[i] = lam[i] !== 0;
-          // 감속기 출력축 토크 = 모터 구동토크 − 로터 반사관성 가속 토크 (정지 시 동일)
-          this.tauOut[i] = this.tauAct[i] - c.armature[i] * (this.qd[i] - qdPrev[i]) / dt;
+          const qdd = (this.qd[i] - qdPrev[i]) / dt;
+          // 감속기 출력축 토크 = 구동토크 − 로터 반사관성×가속 − 구동부 마찰 (링크에 실제 전달되는 토크)
+          this.tauOut[i] = this.tauAct[i] - c.armature[i] * qdd - fric(c, i, this.qd[i]);
           this.q[i] += this.qd[i] * dt;
         }
         this.t += dt;
@@ -352,10 +507,11 @@
   }
 
   // 0 kg / m kg 정적 시험 + 이론값(하중 중력 모멘트를 실제 관절축에 투영)
-  function staticPayloadTest(model, pose, payload = 1.0, off = [0.12, 0, 0], armMass = null) {
+  function staticPayloadTest(model, pose, payload = 1.0, off = [0.12, 0, 0], armMass = null, bodyQ = null, cfg = {}) {
     const res = {};
     for (const m of [0, payload]) {
-      const sim = new Sim(model);
+      const sim = new Sim(model, cfg);
+      if (bodyQ) sim.setBodyPose(bodyQ);
       if (armMass) sim.setArmMass(armMass);
       sim.setPayload(m, off, false);
       res[m] = sim.settle(pose);
@@ -372,5 +528,5 @@
       q0: Array.from(a.q), q1: Array.from(b.q), payloadPoint: c, effort: Array.from(arm.effort) };
   }
 
-  return { Sim, Arm, Trajectory, staticPayloadTest, N, util: { mm, mv, cross, dot, sub, add, axisAngle, cholSolve } };
+  return { Sim, Arm, Body, Trajectory, staticPayloadTest, N, ACT_DEF, util: { mm, mv, cross, dot, sub, add, axisAngle, cholSolve } };
 });

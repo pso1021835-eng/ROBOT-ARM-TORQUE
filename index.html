@@ -46,6 +46,10 @@ table.st{border-collapse:collapse;width:100%;font:11px ui-monospace,Menlo,Consol
 table.st td,table.st th{border-bottom:1px solid var(--rule);padding:2px 3px;text-align:right}
 table.st th{color:var(--mute);font-weight:500}
 table.st td:first-child,table.st th:first-child{text-align:left}
+table.act input{width:58px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:4px;padding:2px 4px;font:inherit;text-align:right}
+.bj{display:grid;grid-template-columns:96px 1fr 52px;align-items:center;gap:6px;margin:2px 0;font-size:11.5px}
+.bj input{width:100%;accent-color:#c9962a}
+.bj span:last-child{font:11px ui-monospace,Menlo,monospace;text-align:right;color:var(--text)}
 .hint{position:absolute;left:8px;bottom:6px;color:var(--mute);font-size:11px;pointer-events:none}
 @media (max-width:900px){.app{grid-template-columns:1fr;height:auto}main{grid-template-rows:50vh auto}#plots{grid-template-columns:repeat(2,1fr);grid-template-rows:none;grid-auto-rows:220px}}
 </style>
@@ -74,15 +78,27 @@ table.st td:first-child,table.st th:first-child{text-align:left}
     <div class="note" id="massInfo"></div>
   </fieldset>
 
-  <fieldset><legend>추종 · 구동부 가정</legend>
+  <fieldset><legend>몸 자세 (골반 고정 · 오른팔 기준 몸통이 따라 움직임)</legend>
+    <div id="bodyJoints"></div>
+    <div class="btns"><button id="btnBodyZero">몸 자세 0으로</button><button id="btnBodyLean">허리 앞으로 20°</button><button id="btnLeftDown">왼팔 내림</button></div>
+    <div class="note">허리를 기울이면 오른팔에 대한 중력 방향이 바뀌어 토크가 달라집니다. 다리는 골반 고정이라 표시만(0 rad).</div>
+  </fieldset>
+
+  <fieldset><legend>충돌</legend>
+    <label class="chk"><input type="checkbox" id="col" checked> 오른팔·손 하중 ↔ 몸(몸통·골반·다리·머리·왼팔) 및 오른팔 자기충돌</label>
+    <label class="chk"><input type="checkbox" id="showCol"> 충돌 형상(구) 보기</label>
+    <div class="note" id="colInfo"></div>
+  </fieldset>
+
+  <fieldset><legend>추종 · 구동부(액추에이터) 가정</legend>
     <div class="row"><label for="vmax">최대 속도 [°/s]</label><input id="vmax" type="number" value="60" min="1"></div>
     <div class="row"><label for="amax">최대 가속도 [°/s²]</label><input id="amax" type="number" value="240" min="1"></div>
-    <div class="row"><label for="damp">관절 점성 마찰 [N·m·s/rad]</label><input id="damp" type="number" value="1.0" step="0.1" min="0"></div>
-    <div class="row"><label for="arma">로터 반사관성 배율 [×]<br><span class="note">기본 0.03/0.025/…/0.01 kg·m²</span></label><input id="arma" type="number" value="1" step="0.1" min="0"></div>
-    <label class="chk"><input type="checkbox" id="ff" checked> 모델 기반 피드포워드 (중력·관성 보상)</label>
+    <div class="note" style="margin:6px 0 3px">관절별 구동부 (URDF에 없는 값 · 가정, 바꿔서 [적용])<br>J: 로터 반사관성 = 로터관성×감속비² · b: 점성 마찰 · τc: 쿨롱 마찰</div>
+    <table class="st act" id="actTable"></table>
+    <label class="chk"><input type="checkbox" id="ff" checked> 모델 기반 피드포워드 (중력·관성·마찰 보상)</label>
     <label class="chk"><input type="checkbox" id="autoStop" checked> 토크 한계 0.3 s 이상 지속 시 자동 일시정지</label>
     <label class="chk"><input type="checkbox" id="yfix"> 그래프 y축을 토크 한계로 고정</label>
-    <div class="btns"><button class="primary" id="btnCtrl">적용</button></div>
+    <div class="btns"><button class="primary" id="btnCtrl">적용</button><button id="btnActDef">구동부 기본값</button><button id="btnActZero">구동부 0 (강체 이상값)</button></div>
   </fieldset>
 
   <div class="btns">
@@ -101,7 +117,7 @@ table.st td:first-child,table.st th:first-child{text-align:left}
 </main>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="dynamics.js?v=1"></script>
-<script src="app.js?v=1"></script>
+<script src="dynamics.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

@@ -110,6 +110,49 @@ const pose = [-90, 0, 0, 88, 0, 0, 0].map((v) => v * D);
   const err = maxAbs(Array.from(b.tau, (v, i) => v - 1.5 * a.tau[i]));
   check("팔 질량 ×1.5 → 토크 ×1.5", err < 1e-3, `(어깨 pitch ${a.tau[0].toFixed(3)} → ${b.tau[0].toFixed(3)})`);
 }
+// 9) 몸 자세(허리 기울임): 오른팔 정적 토크 vs URDF 독립계산
+{
+  const refsW = JSON.parse(fs.readFileSync(path.join(__dirname, "tools", "ref_waist.json"), "utf8"));
+  let worst = 0, worstSim = 0;
+  for (const c of refsW) {
+    const sim = new Sim(model); sim.setBodyPose(c.waist); sim.setPayload(1.0, [0.12, 0, 0], false);
+    const q = c.arm_deg.map((v) => v * D);
+    worst = Math.max(worst, maxAbs(sim.arm.gravityTorque(q).map((v, i) => v - c.tau[i])));
+    sim.reset(q); const r = sim.settle(q, 2, 0.3);
+    worstSim = Math.max(worstSim, maxAbs(Array.from(r.tau, (v, i) => v - c.tau[i])));
+  }
+  check("허리 기울임 자세 정적 토크 = URDF 독립계산", worst < 1e-6 && worstSim < 2e-3, `(정역학 ${worst.toExponential(1)}, 시뮬 정착 ${worstSim.toExponential(1)} N·m)`);
+}
+// 10) 충돌: 손·팔이 몸통을 뚫지 않음 (충돌 끄면 뚫리는 목표로 확인)
+{
+  const deep = (sim) => { // 비제외 쌍 중 최대 침투 깊이
+    const F = sim.arm.fk(sim.q); const cs = sim._contacts(F); return cs.reduce((m, c) => Math.max(m, -c.d), 0);
+  };
+  const targets = [[-20, 19.6, 120, -56, 0, 0, 0], [-60, 15, 90, -50, 60, 30, 60], [-100, 19, 110, -40, 0, 30, 0], [10, 19.6, 0, 0, 0, 0, 0]];
+  let worstOn = 0, worstOff = 0, nContact = 0;
+  for (const tg of targets) {
+    for (const col of [true, false]) {
+      const sim = new Sim(model, { collision: col }); sim.setTarget(tg.map((v) => v * D));
+      let w = 0;
+      for (let k = 0; k < 5000; k++) { sim.step(1); if (k % 10 === 0) { const d = col ? deep(sim) : (() => { sim.cfg.collision = true; const x = deep(sim); sim.cfg.collision = false; return x; })(); w = Math.max(w, d); } if (col && sim.contacts.length) nContact++; }
+      if (col) worstOn = Math.max(worstOn, w); else worstOff = Math.max(worstOff, w);
+    }
+  }
+  check("충돌 켬: 최대 침투 < 5 mm (충돌 끄면 같은 목표에서 > 20 mm 뚫림)", worstOn < 0.005 && worstOff > 0.02,
+    `(켬 ${(worstOn * 1000).toFixed(2)} mm, 끔 ${(worstOff * 1000).toFixed(1)} mm, 접촉 스텝 ${nContact})`);
+}
+// 11) 구동부 마찰·반사관성: 정지 토크 불변, 등속 구간에서 구동토크 − 출력축 토크 = 마찰
+{
+  const a = new Sim(model, { viscous: [0, 0, 0, 0, 0, 0, 0], coulomb: [0, 0, 0, 0, 0, 0, 0], armature: [0, 0, 0, 0, 0, 0, 0] });
+  const b = new Sim(model);
+  const ra = a.settle(pose, 3, 0.3), rb = b.settle(pose, 3, 0.3);
+  const ds = maxAbs(Array.from(ra.tau, (v, i) => v - rb.tau[i]));
+  const c = new Sim(model); c.setTarget([0, 0, 0, 60 * D, 0, 0, 0]); // 팔꿈치 60°/s 등속 구간
+  let gap = 0, n = 0, fr = 0;
+  for (let k = 0; k < 1000; k++) { c.step(1); if (k > 300 && k < 700) { gap += c.tauAct[3] - c.tauOut[3]; fr += c.cfg.viscous[3] * c.qd[3] + c.cfg.coulomb[3] * Math.tanh(c.qd[3] / c.cfg.vStick); n++; } }
+  check("구동부 모델: 정지 토크 불변, 등속 시 (구동−출력) = 마찰", ds < 2e-3 && Math.abs(gap / n - fr / n) < 0.05,
+    `(정지 차 ${ds.toExponential(1)}, 등속 차 ${(gap / n).toFixed(3)} vs 마찰 ${(fr / n).toFixed(3)} N·m)`);
+}
 // 8) 성능
 {
   const sim = new Sim(model); sim.setTarget(pose); const t0 = Date.now(); sim.step(5000); const ms = Date.now() - t0;
