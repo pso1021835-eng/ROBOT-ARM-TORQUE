@@ -55,10 +55,16 @@ index.html을 연 화면이 곧 시뮬레이터 (GitHub Pages: main / root).
     링크 하중 = 강체 출력축 토크 − Jl·q̈, 모터 = 강체 구동 토크 피드포워드 + PD(토크 한계 URDF effort), 고유진동수에 맞춰 1 ms를 잘게 나눠 적분
   - 판정: 기어 = 설계실 엔진 정적 강도(ISO 6336)를 토크별 표로 미리 계산해 로그 보간, 유성 베어링 = 핀 하중/C0, 출력 베어링 = C0/P0,
     P0 = Fr + 2000·M/dp + 0.44·Fa
-- 화면: 3D 관절 고리 색(여유, 0.5 s 유지), 관절별 현재·최저 여유 표, 최근 3 s 강체 vs 기어 토크 그래프(이 떨어짐 눈금)
+- 화면: 관절마다 유성감속기 기어세트 3D(`reducer_gears.js`, 설계실 viewer3d의 치형·배치·위상 그대로, 실제 크기·실제 감속비로 회전,
+  링 = 부모 링크 고정 · 마지막 캐리어 = 관절 출력). 색 = 부품별 여유(썬·유성·링 = 기어 접촉·굽힘, 캐리어 원판 = 그 단 유성 베어링,
+  바깥 고리 = 출력 베어링), 0.5 s 최저값 유지. 로봇 외피 반투명·확대 배율 선택.
+  관절별 현재·최저 여유 표, 최근 3 s 강체 vs 기어 토크 그래프(이 떨어짐 눈금)
+- 감속비·기어 제원 선정: 대상 관절의 피크 토크를 요구 토크로 가져와 설계실 추천 엔진(`vendor/pgd/recommend.js`)으로
+  잇수·모듈·치폭·유성 수 조합을 찾고(외경·길이·감속비 편차·구성 조건), 정적 한계 토크가 요구 이상인 것부터 보여줌 → [추가]로 새 종류(D1…) 배치.
+  종류별 잇수·모듈·치폭·유성 수·비틀림각 직접 수정(엔진 판정 오류가 있으면 적용 안 함)
 - [적용] 시 구동부 표 J를 감속기 Jm으로 맞춰 강체 계산과 유연 모델의 모터 관성을 일치시킴
 - `app.js` 변경은 점검용 객체 `window.__h2x`에 scene · linkGroups · model 읽기 전용 접근자 추가뿐 (기본 시뮬레이터 동작 불변)
-- 감속기 계산 엔진: `vendor/pgd/` = [PLANETARY-GEAR](https://github.com/pso1021835-eng/PLANETARY-GEAR) @ `26b4b50` 의 `engine.js`, `carrier-geometry.js` 복사본
+- 감속기 계산 엔진: `vendor/pgd/` = [PLANETARY-GEAR](https://github.com/pso1021835-eng/PLANETARY-GEAR) @ `26b4b50` 의 `engine.js`, `carrier-geometry.js`, `viewer3d.js`, `recommend.js`, `bearings.js` 복사본
 - 감속기 예시 제원 A·B·C (`reducer_presets.js`): 설계실 추천 엔진(recommend.js runSync)으로 자동 생성
   (A Ø80×42 i≈22.5 · B Ø66×36 i≈20 · C Ø52×30 i≈16). **H2-X 실물 제원 아님.** 화면에서 설계 JSON을 붙여 넣어 바꿀 수 있음
 - 모터 쪽 반사관성 Jm 기본값: A 0.0251(unitree_rl_lab N7520-22.5), C 0.0036(N5020-16), B 0.012(공개값 없음 → 가정)

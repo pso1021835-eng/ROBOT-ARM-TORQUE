@@ -99,6 +99,36 @@ textarea{width:100%;height:80px;background:var(--soft);border:1px solid var(--ru
     <div class="note" id="lvMsg">감속기 계산 준비 중…</div>
   </fieldset>
 
+  <fieldset><legend>감속기 설계 — 감속비 · 기어 제원 선정</legend>
+    <div class="row"><label for="dzJoint">대상 관절</label><select id="dzJoint"></select></div>
+    <div class="btns" style="margin-top:2px"><button id="dzFromPeak">이 관절 피크 → 요구 토크</button></div>
+    <div class="row"><label for="dzT">요구 피크 토크 [N·m]</label><input id="dzT" type="number" value="60" step="5" min="0.1"></div>
+    <div class="row"><label for="dzRatio">목표 감속비</label><input id="dzRatio" type="number" value="20" step="0.5" min="2"></div>
+    <div class="row"><label for="dzTol">허용 편차 [%]</label><input id="dzTol" type="number" value="3" step="0.5" min="0"></div>
+    <div class="row"><label for="dzOD">최대 외경 [mm]</label><input id="dzOD" type="number" value="66" step="2" min="20"></div>
+    <div class="row"><label for="dzH">최대 길이 [mm]</label><input id="dzH" type="number" value="36" step="2" min="8"></div>
+    <div class="row"><label for="dzMods">모듈 후보</label><input id="dzMods" type="text" value="0.5,0.6,0.7,0.8,1.0" style="width:130px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;text-align:right"></div>
+    <div class="row"><label for="dzNs">유성 개수 후보</label><input id="dzNs" type="text" value="3,4,5" style="width:130px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;text-align:right"></div>
+    <div class="row"><label>구성</label><span><label class="chk" style="display:inline-flex;margin:0 6px 0 0"><input type="checkbox" id="dzOne">1단</label><label class="chk" style="display:inline-flex;margin:0 6px 0 0"><input type="checkbox" id="dzShared" checked>2단 링 공유</label><label class="chk" style="display:inline-flex;margin:0"><input type="checkbox" id="dzSep" checked>2단 분리</label></span></div>
+    <div class="row"><label for="dzJm">모터 반사관성 Jm [kg·m²] <span class="note">로터관성 × i²</span></label><input id="dzJm" type="number" value="0.012" step="0.001" min="0.00001"></div>
+    <div class="btns"><button class="primary" id="dzRun">추천 찾기</button></div>
+    <div class="note">설계실 추천 엔진(잇수·모듈·치폭 조합 → 외형·강도 계산)으로 찾고, 정적 한계 토크가 요구 피크 이상인지 표시합니다. [추가]하면 새 종류(D1, D2…)가 생기고 대상 관절에 바로 배치됩니다.</div>
+    <div id="dzOut"></div>
+    <details><summary>종류별 기어 제원 직접 수정</summary>
+      <div class="row"><label for="edKind">종류</label><select id="edKind"></select></div>
+      <div id="edTable"></div>
+      <div class="btns"><button id="edApply">검증 · 적용</button></div>
+      <div class="note">잇수·모듈·치폭·유성 수를 바꾸면 설계실 엔진으로 조립·간섭·강도를 다시 계산합니다. 오류가 있으면 적용하지 않습니다.</div>
+    </details>
+  </fieldset>
+
+  <fieldset><legend>3D 보기</legend>
+    <label class="chk"><input type="checkbox" id="gsShow" checked> 관절마다 유성감속기 기어세트 표시 (색 = 부품별 여유)</label>
+    <label class="chk"><input type="checkbox" id="gsShell" checked> 로봇 외피 반투명 (속의 기어 보기)</label>
+    <div class="row"><label for="gsScale">기어세트 확대 배율 <span class="note">1 = 실제 크기</span></label><input id="gsScale" type="number" value="1" step="0.5" min="0.5" max="5"></div>
+    <div class="note">썬·유성·링 = 기어 이빨 여유(접촉·굽힘), 캐리어 원판 = 그 단 유성 베어링, 바깥 고리 = 출력 베어링. 링은 부모 링크에 고정, 마지막 캐리어가 관절과 같이 돌고 썬은 감속비만큼 빨리 돕니다. 색은 0.5 s 동안 가장 나빴던 값.</div>
+  </fieldset>
+
   <fieldset><legend>오른팔 7축 목표각 [°] · 목표 / 궤적 / 실제 · 출력축 토크</legend>
     <div id="joints"></div>
     <div class="btns">
@@ -176,7 +206,7 @@ textarea{width:100%;height:80px;background:var(--soft);border:1px solid var(--ru
   <div class="note" id="srcInfo" style="margin-top:10px"></div>
 </aside>
 <main>
-  <div id="view"><div id="loading">3D 모델 불러오는 중…</div><div class="hint">드래그: 회전 · 오른쪽 드래그: 이동 · 휠: 확대 · 관절 고리 색 = 감속기 여유 (초록 ≥ 2 · 노랑 1.5–2 · 주황 1–1.5 · 빨강 &lt; 1, 0.5 s 유지)</div></div>
+  <div id="view"><div id="loading">3D 모델 불러오는 중…</div><div class="hint">드래그: 회전 · 오른쪽 드래그: 이동 · 휠: 확대 · 관절 기어세트 색 = 부품별 여유 (초록 ≥ 2 · 노랑 1.5–2 · 주황 1–1.5 · 빨강 &lt; 1, 0.5 s 유지)</div></div>
   <div class="rz">
     <h2>감속기 실시간 판정 — 여유 = 안전율 ÷ 목표 (1 미만 = 부족) · 최저값은 [피크 초기화] 이후</h2>
     <div id="lvTable"></div>
@@ -195,8 +225,12 @@ textarea{width:100%;height:80px;background:var(--soft);border:1px solid var(--ru
 <script src="app.js?v=4"></script>
 <script src="vendor/pgd/carrier-geometry.js?v=1"></script>
 <script src="vendor/pgd/engine.js?v=1"></script>
+<script src="vendor/pgd/bearings.js?v=1"></script>
+<script src="vendor/pgd/viewer3d.js?v=1"></script>
+<script src="vendor/pgd/recommend.js?v=1"></script>
 <script src="reducer_presets.js?v=1"></script>
-<script src="reducer_core.js?v=2"></script>
-<script src="reducer_live.js?v=1"></script>
+<script src="reducer_core.js?v=3"></script>
+<script src="reducer_gears.js?v=1"></script>
+<script src="reducer_live.js?v=2"></script>
 </body>
 </html>

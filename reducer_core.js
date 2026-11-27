@@ -44,14 +44,17 @@
     const ev = PGD.evaluate(info.ctx, { Tout: T0, rpm: 0, static: true });
     const chk = PGD.staticCheck(ev, info.target);
     let worst = null;
+    const parts = {};   // 부품별 최저 여유: "단-부품" (부품 0 썬 · 1 유성 · 2 링; 링 공유면 "R")
     ev.rows.forEach((r) => [["접촉(피팅)", r.SH, info.target.SH], ["굽힘", r.SF, info.target.SF]].forEach(([mode, S, t]) => {
       const k = S / t; if (!worst || k < worst.k) worst = { k, S, target: t, mode, stage: r.stage, mesh: r.mesh, part: r.partName };
+      const key = r.part === 2 && info.sharedRing ? "R" : `${r.stage}-${r.part}`;
+      if (!(parts[key] <= k)) parts[key] = k;
     }));
     const planet = ev.stages.map((so, i) => {
       const br = info.ctx.stages[i].st.bearing || {}, P = so.pinForce / Math.max(1, br.count || 1);
       return { stage: i + 1, pinForce: so.pinForce, C0: br.C0, s0: br.C0 / Math.max(P, 1e-9), name: br.name };
     });
-    return { T: T0, ratio: chk.ratio, worst, planet, planetMin: planet.reduce((a, b) => (b.s0 < a.s0 ? b : a)) };
+    return { T: T0, ratio: chk.ratio, worst, parts, planet, planetMin: planet.reduce((a, b) => (b.s0 < a.s0 ? b : a)) };
   }
   const P0of = (ob, w) => w.Fr + 2000 * w.M / ob.dp + 0.44 * w.Fa;
 
@@ -200,11 +203,24 @@
     const hi = Math.max(info.staticCap * 3, 1), lo = hi / 3000, pts = [];
     for (let k = 0; k < n; k++) {
       const T = lo * Math.pow(hi / lo, k / (n - 1)), g = gearCheck(info, T);
-      pts.push({ T, k: g.ratio, worst: g.worst, planet: g.planetMin });
+      pts.push({ T, k: g.ratio, worst: g.worst, planet: g.planetMin, parts: g.parts, planets: g.planet.map((p) => p.s0) });
     }
     // 유성 베어링 s0는 핀 하중(∝ 토크)에 반비례 → 기준점 하나로 충분
     const ref = pts[pts.length - 1];
-    return { pts, planetRef: { T: ref.T, s0: ref.planet.s0, stage: ref.planet.stage } };
+    return { pts, planetRef: { T: ref.T, s0: ref.planet.s0, stage: ref.planet.stage, all: ref.planets } };
+  }
+  // 부품별 여유 (보간) + 단별 유성 베어링 여유
+  function partsAt(tab, T) {
+    const a = Math.abs(T), p = tab.pts, out = {};
+    const keys = Object.keys(p[0].parts);
+    if (a <= p[0].T) { keys.forEach((k) => { out[k] = Infinity; }); }
+    else {
+      let i = 1; while (i < p.length - 1 && a > p[i].T) i++;
+      const f = Math.log(a / p[i - 1].T) / Math.log(p[i].T / p[i - 1].T);
+      keys.forEach((k) => { out[k] = Math.exp(Math.log(p[i - 1].parts[k]) + f * (Math.log(p[i].parts[k]) - Math.log(p[i - 1].parts[k]))); });
+    }
+    const r = tab.planetRef; out.planet = r.all.map((s0) => s0 * r.T / Math.max(a, 1e-9));
+    return out;
   }
   function gearAt(tab, T) {
     const a = Math.abs(T), p = tab.pts;
@@ -301,5 +317,5 @@
     }
   }
 
-  return { reducerInfo, gearCheck, gearTable, gearAt, planetAt, jointWrench, runRigid, runCompliant, evaluateJoint, Live, P0of, ARCMIN };
+  return { reducerInfo, gearCheck, gearTable, gearAt, partsAt, planetAt, jointWrench, runRigid, runCompliant, evaluateJoint, Live, P0of, ARCMIN };
 });
