@@ -62,3 +62,23 @@ for (let j = 0; j < 7; j++) {
   assert(r.parts.every((p) => Number.isFinite(p.k) && p.k > 0), "여유 계산 " + j);
 }
 console.log("reducer_test: all ok");
+// 7) 실시간 감시(Live): 돌아가는 Sim에 붙여도 일괄 계산과 같은 결과 (피크 5 % 이내), 기어 여유 표 보간 = 엔진 직접 계산 (3 % 이내)
+{
+  const Dyn = require("./dynamics.js");
+  const sim = new Dyn.Sim(model, { collision: false, payloadRamp: 0 });
+  sim.setPayload(2, [0.12, 0, 0], false); sim.reset(sc.pose); sim.setTarget(sc.pose); sim.step(1000);
+  const tabs = {}; for (const k of "ABC") tabs[k] = RC.gearTable(info[k]);
+  const joints = Array.from({ length: 7 }, (_, j) => { const k = map[j]; return { info: info[k], tab: tabs[k], K: info[k].K, bl: info[k].backlash, Jm: rec.armature[j] }; });
+  const live = new RC.Live(sim, joints, { kScale: 1, zetaG: 0.05 }).attach();
+  sim.step(50); sim.applyImpulse([0, -150, 0], 0.03, 6); sim.step(500);
+  for (let j = 0; j < 7; j++) {
+    const ref = RC.evaluateJoint(rec, j, { info: info[map[j]], Jm: rec.armature[j], kScale: 1, zetaG: 0.05 });
+    const a = Math.abs(live.peak[j].tg), b = Math.abs(ref.cPk);
+    assert(Math.abs(a / b - 1) < 0.05, `Live 관절 ${j}: 피크 ${a} vs 일괄 ${b}`);
+  }
+  for (const k of "ABC") for (const T of [0.3, 0.7, 1.0].map((f) => f * info[k].staticCap)) {
+    const e = RC.gearAt(tabs[k], T).k, d = RC.gearCheck(info[k], T).ratio;
+    assert(Math.abs(e / d - 1) < 0.03, `${k} 표 보간 ${e} vs 직접 ${d}`);
+  }
+}
+console.log("reducer_test: live ok");

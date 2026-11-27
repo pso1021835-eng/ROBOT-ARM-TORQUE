@@ -195,5 +195,111 @@
       comp, gRig, gComp, P0, obPk: pk, obT: rec.t[pkK], obW: rec.wrench[pkK][j], obS0, parts, gov, effort: rec.effort[j] };
   }
 
-  return { reducerInfo, gearCheck, jointWrench, runRigid, runCompliant, evaluateJoint, P0of, ARCMIN };
+  // ---------------- 실시간용: 토크 → 기어 여유 표 (엔진 evaluate는 무거워 미리 계산 후 로그 보간) ----------------
+  function gearTable(info, n = 36) {
+    const hi = Math.max(info.staticCap * 3, 1), lo = hi / 3000, pts = [];
+    for (let k = 0; k < n; k++) {
+      const T = lo * Math.pow(hi / lo, k / (n - 1)), g = gearCheck(info, T);
+      pts.push({ T, k: g.ratio, worst: g.worst, planet: g.planetMin });
+    }
+    // 유성 베어링 s0는 핀 하중(∝ 토크)에 반비례 → 기준점 하나로 충분
+    const ref = pts[pts.length - 1];
+    return { pts, planetRef: { T: ref.T, s0: ref.planet.s0, stage: ref.planet.stage } };
+  }
+  function gearAt(tab, T) {
+    const a = Math.abs(T), p = tab.pts;
+    if (a <= p[0].T) return { k: Infinity, worst: p[0].worst };
+    for (let i = 1; i < p.length; i++) if (a <= p[i].T) {
+      const f = Math.log(a / p[i - 1].T) / Math.log(p[i].T / p[i - 1].T);
+      return { k: Math.exp(Math.log(p[i - 1].k) + f * (Math.log(p[i].k) - Math.log(p[i - 1].k))), worst: (f < 0.5 ? p[i - 1] : p[i]).worst };
+    }
+    const L = p[p.length - 1]; return { k: L.k * L.T / a, worst: L.worst };
+  }
+  const planetAt = (tab, T) => tab.planetRef.s0 * tab.planetRef.T / Math.max(Math.abs(T), 1e-9);
+
+  // ---------------- 실시간 감시: 돌아가는 Sim에 붙여 매 스텝(1 ms) 유연 모델·반력·여유 갱신 ----------------
+  // joints[j] = {info, tab, K, bl, Jm}; opt = {kScale, zetaG}
+  class Live {
+    constructor(sim, joints, opt = {}) { this.sim = sim; this.set(joints, opt); }
+    set(joints, opt = {}) { this.joints = joints; this.opt = Object.assign({ kScale: 1, zetaG: 0.05 }, this.opt || {}, opt); this.reset(); }
+    reset() {
+      this.st = null; this.qdPrev = null; this.JlT = -1;
+      this.peak = Array.from({ length: N }, () => ({ tg: 0, rig: 0, gear: Infinity, planet: Infinity, ob: Infinity, t: 0, part: "" }));
+      this.hist = []; this.sepCount = new Array(N).fill(0);
+    }
+    _Jl() {
+      const s = this.sim, F = s.arm.fk(s.q), M = s.arm.massMatrix(s.q, F);
+      this.Jl = Array.from({ length: N }, (_, i) => Math.max(M[i * N + i], 1e-6)); this.JlT = s.t;
+    }
+    // sim.step(1) 직후 호출: qd0 = 스텝 전 속도, q0 = 스텝 전 자세
+    tick(q0, qd0) {
+      const s = this.sim, c = s.cfg, dt = c.dt, o = this.opt;
+      if (this.JlT < 0 || s.t - this.JlT > 0.01) this._Jl();
+      const qdd = Array.from(s.qd, (v, i) => (v - qd0[i]) / dt);
+      if (!this.st) this.st = this.joints.map((jp, j) => {
+        const K = jp.K * o.kScale, d = 0.5 * jp.bl, T0 = s.tauOut[j];
+        return { thL: q0[j], wL: qd0[j], thM: q0[j] + T0 / K + Math.sign(T0) * d, wM: qd0[j], open: false, tg: T0, gap: false };
+      });
+      // 관절 반력 (외력 포함, 접촉력 제외)
+      const pl = s.pulses[0];
+      const ext = s.extPoint && Math.hypot(...s.extForce) > 0 ? { link: pl ? pl.link : N - 1, p: s.extPoint, F: s.extForce } : null;
+      const W = jointWrench(s.arm, q0, qd0, qdd, ext);
+      const row = { t: s.t, rig: Array.from(s.tauOut), tg: new Array(N), gap: new Array(N), k: new Array(N), part: new Array(N), contact: s.contacts.length > 0, ext: !!ext };
+      for (let j = 0; j < N; j++) {
+        const jp = this.joints[j], st = this.st[j];
+        const K = jp.K * o.kScale, delta = 0.5 * jp.bl, Jm = Math.max(jp.Jm, 1e-6), Jl = this.Jl[j];
+        const Jeq = Jm * Jl / (Jm + Jl), cG = 2 * o.zetaG * Math.sqrt(K * Jeq), wnG = Math.sqrt(K / Jeq);
+        const sub = Math.max(1, Math.ceil(dt / Math.min(dt, 0.04 / wnG))), h = dt / sub;
+        const Jt = Jm + Jl, kp = Jt * c.wn * c.wn, kd = 2 * c.zeta * c.wn * Jt, eff = s.arm.effort[j], bv = c.viscous[j];
+        const td = s.tauOut[j] - Jl * qdd[j], ff = s.tauAct[j];
+        let tgMax = 0, tgLast = 0, open = false;
+        for (let k = 0; k < sub; k++) {
+          const a = (k + 1) / sub, qRef = q0[j] + a * (s.q[j] - q0[j]), vRef = qd0[j] + a * (s.qd[j] - qd0[j]);
+          let um = ff + kp * (qRef - st.thM) + kd * (vRef - st.wM);
+          um = um > eff ? eff : um < -eff ? -eff : um;
+          const x = st.thM - st.thL, dz = x > delta ? x - delta : x < -delta ? x + delta : 0;
+          const g = dz !== 0 ? K * dz + cG * (st.wM - st.wL) : 0;
+          st.wM += h * (um - g - bv * st.wM) / Jm; st.wL += h * (g - td) / Jl;
+          st.thM += h * st.wM; st.thL += h * st.wL;
+          if (Math.abs(g) > Math.abs(tgMax)) tgMax = g; tgLast = g; if (dz === 0) open = true;
+        }
+        const tg = Math.abs(tgMax) > Math.abs(tgLast) ? tgMax : tgLast;
+        if (open && !st.gap) this.sepCount[j]++;
+        st.gap = open; st.tg = tg;
+        const ga = gearAt(jp.tab, tg), pk = planetAt(jp.tab, tg) / jp.info.target.s0;
+        const P0 = P0of(jp.info.ob, W[j]), ob = jp.info.ob.C0 / Math.max(P0, 1e-9) / jp.info.target.s0;
+        const parts = [["기어 " + (ga.worst ? `${ga.worst.stage}단 ${ga.worst.part} ${ga.worst.mode}` : ""), ga.k], ["유성 베어링", pk], ["출력 베어링", ob]];
+        const gov = parts.reduce((x, y) => (y[1] < x[1] ? y : x));
+        row.tg[j] = tg; row.gap[j] = open; row.k[j] = gov[1]; row.part[j] = gov[0];
+        st.now = { tg, gear: ga.k, planet: pk, ob, P0, W: W[j], gov };
+        const P = this.peak[j];
+        if (Math.abs(tg) > Math.abs(P.tg)) { P.tg = tg; P.t = s.t; }
+        if (Math.abs(s.tauOut[j]) > Math.abs(P.rig)) P.rig = s.tauOut[j];
+        if (ga.k < P.gear) { P.gear = ga.k; P.gearWorst = ga.worst; }
+        if (pk < P.planet) P.planet = pk;
+        if (ob < P.ob) { P.ob = ob; P.obW = W[j]; }
+        const mk = Math.min(P.gear, P.planet, P.ob);
+        P.part = mk === P.gear ? "기어" : mk === P.planet ? "유성 베어링" : "출력 베어링"; P.k = mk;
+      }
+      this.hist.push(row);
+      const keep = Math.round((this.opt.histSec || 4) / dt);
+      if (this.hist.length > keep * 1.2) this.hist.splice(0, this.hist.length - keep);
+      return row;
+    }
+    // sim.step을 감싸 매 스텝 tick
+    attach() {
+      const sim = this.sim, orig = sim.step.bind(sim), self = this;
+      this.detach = () => { sim.step = orig; };
+      sim.step = function (n = 1) {
+        for (let k = 0; k < n; k++) {
+          const q0 = Float64Array.from(sim.q), qd0 = Float64Array.from(sim.qd);
+          orig(1);
+          if (self.enabled !== false) self.tick(q0, qd0);
+        }
+      };
+      return this;
+    }
+  }
+
+  return { reducerInfo, gearCheck, gearTable, gearAt, planetAt, jointWrench, runRigid, runCompliant, evaluateJoint, Live, P0of, ARCMIN };
 });

@@ -17,7 +17,7 @@
     $("srcInfo").innerHTML =
       `모델: <a style="color:#7d9cb8" href="${m.source.repo}" target="_blank" rel="noopener">unitree_ros</a> @ ${m.source.commit.slice(0, 7)} · ${m.source.file}<br>` +
       `전신 ${m.total_mass.toFixed(2)} kg · 골반 높이 ${m.base_height.toFixed(4)} m · 나머지 관절 0 rad 고정 · 접촉 없음 · BSD-3-Clause`;
-    window.__h2x = { get sim() { return sim; }, get arrow() { return arrow; }, get target() { return targetMesh; } }; // 점검용
+    window.__h2x = { get sim() { return sim; }, get arrow() { return arrow; }, get target() { return targetMesh; }, get scene() { return scene; }, get linkGroups() { return linkGroups; }, get model() { return model; } }; // 점검용 · 감속기 페이지(reducer.html)가 같은 화면에 겹쳐 그릴 때 사용
     requestAnimationFrame(loop);
   }).catch((e) => { $("status").textContent = "model.json 불러오기 실패: " + e; });
 

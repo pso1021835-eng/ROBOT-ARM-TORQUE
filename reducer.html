@@ -4,129 +4,199 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>H2-X 오른팔 — 관절 감속기 배치 · 충격 판정</title>
+<title>H2-X 오른팔 — 관절 감속기 실시간 판정</title>
 <style>
 :root{--bg:#141414;--panel:#1c1c1d;--soft:#232324;--ink:#e4e4e4;--text:#d6d6d6;--mute:#8a8a8a;--rule:#2a2a2a;--brick:#c8371e;--ok:#5fbf86;--accent2:#7d9cb8;--warn:#c9962a}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 "Pretendard","Inter",system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;-webkit-font-smoothing:antialiased}
-a{color:var(--accent2)}
-.app{display:grid;grid-template-columns:400px 1fr;min-height:100vh}
-aside{background:var(--panel);border-right:1px solid var(--rule);padding:12px 14px 20px;overflow-y:auto;max-height:100vh;position:sticky;top:0}
-main{padding:12px 14px 30px;min-width:0}
+.app{display:grid;grid-template-columns:380px 1fr;height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--rule);overflow-y:auto;padding:12px 14px 20px}
+main{display:block;min-width:0;height:100vh;overflow-y:auto}
+#view{height:46vh;min-height:260px}
+#plots{height:470px}
 h1{font-size:15px;margin:0 0 2px;font-weight:700}
-h2{font-size:13.5px;margin:16px 0 6px;color:var(--accent2);font-weight:600}
 .sub{color:var(--mute);font-size:11.5px;margin-bottom:10px}
 fieldset{border:1px solid var(--rule);border-radius:8px;margin:0 0 10px;padding:8px 10px 10px}
 legend{color:var(--accent2);font-weight:600;font-size:12px;padding:0 4px}
+.j{margin:4px 0 7px}
+.j .top{display:flex;justify-content:space-between;gap:6px;font-size:12px}
+.j .rng{color:var(--mute);font-size:11px}
+.j input[type=range]{width:100%;margin:2px 0 0;accent-color:var(--accent2)}
+.j .rd{font:11.5px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--text)}
+.j .rd.sat{color:#ff6b55;font-weight:700}
 .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0}
 .row label{flex:1;color:var(--text)}
-select,input[type=number],textarea{background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit}
-.row input[type=number]{width:92px;text-align:right}
+.row select{background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit}
+.row input[type=number]{width:92px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;text-align:right}
+.chk{display:flex;gap:6px;align-items:flex-start;margin:5px 0;color:var(--text)}
 .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 button{background:var(--soft);color:var(--ink);border:1px solid #3a3a3a;border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
 button:hover{border-color:var(--accent2)}
 button.primary{background:#2d3b48;border-color:#4b6478}
-button:disabled{opacity:.5;cursor:wait}
-.note{color:var(--mute);font-size:11px;margin-top:4px;line-height:1.5}
-.pose{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
-.pose input{width:100%;text-align:right;padding:3px 3px;font-size:11.5px}
-.pose span{font-size:10px;color:var(--mute);text-align:center}
-table{border-collapse:collapse;width:100%;font:11.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-td,th{border-bottom:1px solid var(--rule);padding:3px 4px;text-align:right;white-space:nowrap}
-th{color:var(--mute);font-weight:500;font-family:"Pretendard",system-ui,sans-serif;font-size:11px}
-td:first-child,th:first-child{text-align:left}
-table.asg input{width:56px;text-align:right;padding:2px 3px;font-size:11px}
-table.asg select{padding:2px 3px;font-size:11px}
-#res tr{cursor:pointer}
-#res tr.sel td{background:#22303b}
-.g{color:var(--ok)} .w{color:var(--warn)} .b{color:#ff6b55;font-weight:700}
+.note{color:var(--mute);font-size:11px;margin-top:4px}
 #status{font:11.5px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:var(--text);background:var(--soft);border-radius:6px;padding:7px 8px;margin-top:8px}
 #status.alert{color:#ff8a76;border:1px solid #6d2a20}
-.plots{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
-.pl{background:var(--panel);border:1px solid var(--rule);border-radius:6px;height:190px;position:relative;cursor:pointer}
-.pl.sel{border-color:#4b6478}
+#view{position:relative;background:#0f0f10;border-bottom:1px solid var(--rule)}
+#view canvas{display:block}
+#loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:13px}
+#plots{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:1fr 1fr;gap:6px;padding:6px;min-height:0}
+.pl{background:var(--panel);border:1px solid var(--rule);border-radius:6px;position:relative;min-height:0}
 .pl canvas{position:absolute;inset:0;width:100%;height:100%}
-.detail{display:grid;grid-template-columns:minmax(300px,1.3fr) 1fr;gap:10px;align-items:start}
-.card{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:10px 12px}
-.card .big{height:220px;position:relative}
-.card .big canvas{position:absolute;inset:0;width:100%;height:100%}
-.legend{font-size:11px;color:var(--mute);margin:4px 0 8px;line-height:1.6}
-.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin:0 4px 0 10px}
-details{margin-top:6px} summary{cursor:pointer;color:var(--accent2);font-size:12px}
-textarea{width:100%;height:90px;font:11px ui-monospace,Menlo,monospace}
-.empty{color:var(--mute);padding:30px 0;text-align:center}
-@media (max-width:1000px){.app{grid-template-columns:1fr}aside{position:static;max-height:none}.detail{grid-template-columns:1fr}}
+.legend{font-size:11px;color:var(--mute);padding:8px 10px;line-height:1.55}
+.legend b{color:var(--text)}
+table.st{border-collapse:collapse;width:100%;font:11px ui-monospace,Menlo,Consolas,monospace;margin-top:6px}
+table.st td,table.st th{border-bottom:1px solid var(--rule);padding:2px 3px;text-align:right}
+table.st th{color:var(--mute);font-weight:500}
+table.st td:first-child,table.st th:first-child{text-align:left}
+table.act input{width:58px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:4px;padding:2px 4px;font:inherit;text-align:right}
+.bj{display:grid;grid-template-columns:96px 1fr 52px;align-items:center;gap:6px;margin:2px 0;font-size:11.5px}
+.bj input{width:100%;accent-color:#c9962a}
+.bj span:last-child{font:11px ui-monospace,Menlo,monospace;text-align:right;color:var(--text)}
+.hint{position:absolute;left:8px;bottom:6px;color:var(--mute);font-size:11px;pointer-events:none}
+@media (max-width:900px){.app{grid-template-columns:1fr;height:auto}main{grid-template-rows:50vh auto}#plots{grid-template-columns:repeat(2,1fr);grid-template-rows:none;grid-auto-rows:220px}}
+
+.rz{padding:8px 10px 4px}
+.rz h2{font-size:13px;margin:4px 0 6px;color:var(--accent2);font-weight:600}
+table.lv{border-collapse:collapse;width:100%;font:11.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+table.lv td,table.lv th{border-bottom:1px solid var(--rule);padding:3px 5px;text-align:right;white-space:nowrap}
+table.lv th{color:var(--mute);font-weight:500;font-family:"Pretendard",system-ui,sans-serif;font-size:11px}
+table.lv td:first-child,table.lv th:first-child,table.lv td.l{text-align:left}
+.kg{color:var(--ok)} .kw{color:var(--warn)} .kb{color:#ff6b55;font-weight:700}
+#lvPlots{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;height:400px;grid-template-rows:1fr 1fr;margin-top:8px}
+#lvPlots .pl{background:var(--panel);border:1px solid var(--rule);border-radius:6px;position:relative}
+#lvPlots canvas{position:absolute;inset:0;width:100%;height:100%}
+table.asg{border-collapse:collapse;width:100%;font:11px ui-monospace,Menlo,monospace}
+table.asg td,table.asg th{border-bottom:1px solid var(--rule);padding:2px 3px;text-align:right}
+table.asg th{color:var(--mute);font-weight:500}
+table.asg td:first-child{text-align:left}
+table.asg input{width:54px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:4px;padding:2px 3px;font:inherit;text-align:right}
+table.asg select{background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:4px;font:inherit;padding:1px 2px}
+details summary{cursor:pointer;color:var(--accent2);font-size:12px;margin-top:6px}
+textarea{width:100%;height:80px;background:var(--soft);border:1px solid var(--rule);color:var(--ink);border-radius:5px;font:11px ui-monospace,Menlo,monospace}
+.pcard{border:1px solid var(--rule);border-radius:6px;padding:6px 8px;margin:6px 0;font:11px/1.5 ui-monospace,Menlo,monospace;color:var(--text)}
+@media (max-width:900px){main{height:auto}#lvPlots{grid-template-columns:repeat(2,1fr);height:auto;grid-template-rows:none;grid-auto-rows:200px}}
 </style>
 </head>
 <body>
 <div class="app">
 <aside>
-  <h1>관절 감속기 배치 · 충격 판정</h1>
-  <div class="sub">H2-X 오른팔 7축 · 관절마다 유성감속기를 넣고 충격 때 기어 이빨·베어링 여유를 비교 · <a href="index.html">← 토크–각변위 시뮬레이터</a></div>
+  <h1>H2-X 오른팔 — 관절 감속기 실시간 판정</h1>
+  <div class="sub">토크–각변위 시뮬레이터 + 관절마다 유성감속기 배치 · 기어 이빨·베어링 여유를 실시간 계산 · <a href="index.html" style="color:var(--accent2)">← 기본 시뮬레이터</a></div>
 
-  <fieldset><legend>시나리오</legend>
-    <div class="note" style="margin-top:0">팔 자세 [°] (어깨 pitch · roll · yaw · 팔꿈치 · 손목 roll · pitch · yaw)</div>
-    <div class="pose" id="pose"></div>
-    <div class="btns"><button id="poseRef">기준 자세</button><button id="poseExt">팔 뻗기</button></div>
-    <div class="row"><label for="pay">손에 든 물체 [kg]</label><input id="pay" type="number" value="2" step="0.5" min="0"></div>
-    <div class="row"><label for="payX">물체 무게중심 x [m] <span class="note">손 좌표계</span></label><input id="payX" type="number" value="0.12" step="0.01"></div>
-    <div class="row"><label for="impF">충격 최대 힘 [N]</label><input id="impF" type="number" value="150" step="10" min="0"></div>
-    <div class="row"><label for="impT">충격 지속 [ms] <span class="note">반-사인파</span></label><input id="impT" type="number" value="30" step="5" min="1"></div>
-    <div class="row"><label for="impDir">방향 (몸통 기준)</label><select id="impDir"><option value="0">앞 (+x)</option><option value="1">뒤 (−x)</option><option value="2">왼쪽 (+y)</option><option value="3" selected>오른쪽 (−y)</option><option value="4">위 (+z)</option><option value="5">아래 (−z)</option></select></div>
-    <div class="row"><label for="impAt">작용점</label><select id="impAt"><option value="6">손 (물체 무게중심)</option><option value="4">손목 관절</option><option value="3">팔꿈치 관절</option></select></div>
-    <div class="row"><label for="tPost">충격 후 관측 [s]</label><input id="tPost" type="number" value="0.5" step="0.1" min="0.1" max="3"></div>
-  </fieldset>
-
-  <fieldset><legend>관절별 감속기 배치</legend>
-    <table class="asg"><thead><tr><th>관절</th><th>종류</th><th>i</th><th title="출력축 비틀림 강성">K<br>N·m/′</th><th title="출력축 전체 백래시">백래시<br>′</th><th title="모터 쪽 반사관성 (로터관성 × i²)">Jm<br>kg·m²</th></tr></thead><tbody id="asg"></tbody></table>
-    <div class="btns"><button id="asgDef">H2-X 배치로</button><button id="asgEng">K·백래시 = 엔진값</button></div>
-    <div class="note">종류를 바꾸면 그 감속기의 엔진 계산값(K·백래시)과 기본 Jm으로 채웁니다. 칸은 직접 고칠 수 있고 ′ = arcmin.</div>
-    <details><summary>감속기 종류 A · B · C 제원</summary><div id="presetInfo"></div>
-      <div class="note">설계실에서 저장한 설계 JSON을 붙여 넣으면 해당 종류를 그 설계로 바꿉니다 (이 브라우저에만, 새로고침하면 원래대로).</div>
+  <fieldset><legend>관절별 감속기 배치 (실시간 판정)</legend>
+    <table class="asg"><thead><tr><th>관절</th><th>종류</th><th>i</th><th title="출력축 비틀림 강성">K N·m/′</th><th title="출력축 전체 백래시">백래시 ′</th><th title="모터 쪽 반사관성 = 로터관성 × i²">Jm kg·m²</th></tr></thead><tbody id="asg"></tbody></table>
+    <div class="row"><label for="kScale">강성 배율 <span class="note">하우징·베어링·축 비틀림 환산</span></label><input id="kScale" type="number" value="1" step="0.1" min="0.01"></div>
+    <div class="row"><label for="zetaG">맞물림 감쇠비 ζ</label><input id="zetaG" type="number" value="0.05" step="0.01" min="0"></div>
+    <div class="btns"><button class="primary" id="asgApply">적용</button><button id="asgDef">H2-X 배치로</button><button id="asgEng">K·백래시 = 엔진값</button></div>
+    <div class="btns"><button id="lvReset">피크 초기화</button><label class="chk" style="margin:0"><input type="checkbox" id="lvOn" checked> 실시간 판정 켜기</label></div>
+    <div class="note">[적용]하면 아래 '구동부 가정' 표의 J도 이 Jm으로 맞춰 강체 계산과 유연 모델이 같은 모터 관성을 씁니다. ′ = arcmin. 엔진 강성은 맞물림+핀+캐리어만이라 실제보다 단단(충격 피크는 보수 쪽).</div>
+    <details><summary>감속기 종류 A · B · C 제원 / 설계 JSON 붙여 넣기</summary><div id="presetInfo"></div>
       <div class="row"><label for="pasteTo">바꿀 종류</label><select id="pasteTo"><option>A</option><option>B</option><option>C</option></select></div>
-      <textarea id="paste" placeholder='{"schema":"pgd/1", ... }'></textarea>
+      <textarea id="paste" placeholder='설계실에서 저장한 설계 JSON {"schema":"pgd/1", ...}'></textarea>
       <div class="btns"><button id="pasteBtn">적용</button></div>
     </details>
+    <div class="note" id="lvMsg">감속기 계산 준비 중…</div>
   </fieldset>
 
-  <fieldset><legend>모델 가정</legend>
-    <div class="row"><label for="kScale">강성 배율 <span class="note">하우징·베어링·축 포함 환산</span></label><input id="kScale" type="number" value="1" step="0.1" min="0.01"></div>
-    <div class="row"><label for="zetaG">맞물림 감쇠비 ζ</label><input id="zetaG" type="number" value="0.05" step="0.01" min="0"></div>
-    <div class="note">엔진 강성 K는 맞물림 + 유성 핀 + 캐리어만이라 실제보다 단단합니다 (하우징·베어링·축 비틀림 제외). 단단할수록 충격 피크가 커지므로 배율 1은 보수 쪽입니다. 실측 강성이 있으면 K 칸에 직접 넣으세요.</div>
+  <fieldset><legend>오른팔 7축 목표각 [°] · 목표 / 궤적 / 실제 · 출력축 토크</legend>
+    <div id="joints"></div>
+    <div class="btns">
+      <button id="btnRef">기준 자세 복귀</button>
+      <button id="btnExt">팔 뻗기 (시험 자세)</button>
+      <button class="primary" id="btnRand">랜덤 자세</button>
+    </div>
+    <div class="row"><label class="chk" style="margin:0"><input type="checkbox" id="autoRand"> 자동 랜덤 — 도착 후 대기 [s]</label><input id="randWait" type="number" value="1.5" step="0.5" min="0"></div>
+    <div class="note">랜덤 자세: 가동범위 안 · 몸과 1 cm 이상 떨어짐 · 현재 하중으로 정지 토크가 한계의 80% 이하인 자세만 뽑음</div>
   </fieldset>
 
-  <div class="btns"><button class="primary" id="run" style="width:100%;padding:9px">계산</button></div>
-  <div id="status">준비 중…</div>
-</aside>
+  <fieldset><legend>제어 방식</legend>
+    <label class="chk"><input type="radio" name="mode" value="position" checked> 위치 제어 — 관절 각도를 단단하게 추종</label>
+    <label class="chk"><input type="radio" name="mode" value="impedance"> 임피던스 제어 — 손 기준점이 스프링·댐퍼처럼 목표 자세에 매달림</label>
+    <div id="impBox">
+      <div class="row"><label for="impKt">병진 강성 K [N/m]</label><input id="impKt" type="number" value="300" step="50" min="0"></div>
+      <div class="row"><label for="impKr">회전 강성 Kr [N·m/rad]</label><input id="impKr" type="number" value="10" step="1" min="0"></div>
+      <div class="row"><label for="impZeta">감쇠비 ζ</label><input id="impZeta" type="number" value="0.8" step="0.1" min="0"></div>
+      <div class="row"><label for="impKn">여유자유도 자세 강성 [N·m/rad]</label><input id="impKn" type="number" value="5" step="1" min="0"></div>
+      <div class="btns"><button class="primary" id="btnImp">적용</button></div>
+      <div class="note">τ = 중력·코리올리 보상 + Jᵀ[K·Δx + D·Δẋ] + 영공간 자세 유지. 손 기준점 = 손에 든 물체 무게중심 위치. 목표 = 슬라이더 자세의 손 위치·방향(초록 반투명 구). 특이자세 근처에서는 강성이 그대로 나오지 않음.</div>
+    </div>
+  </fieldset>
 
-<main>
-  <h2 style="margin-top:2px">관절별 판정 — 여유 = 안전율 ÷ 목표 (1 미만 = 부족)</h2>
-  <div id="resWrap"><div class="empty">왼쪽 [계산]을 누르세요.</div></div>
-  <div class="legend">기어 목표: 접촉 SH ≥ <span id="tSH">1.0</span>, 굽힘 SF ≥ <span id="tSF">1.2</span> (정적, ISO 6336 · 설계실 엔진) · 베어링 목표: 정적 안전율 s0 ≥ <span id="tS0">1.0</span> · 행을 누르면 아래에 상세</div>
+  <fieldset><legend>충격 (외력 펄스)</legend>
+    <div class="row"><label for="impF">최대 힘 [N]</label><input id="impF" type="number" value="100" step="10" min="0"></div>
+    <div class="row"><label for="impT">지속 시간 [ms]</label><input id="impT" type="number" value="30" step="5" min="1"></div>
+    <div class="row"><label for="impDir">방향 (몸통 기준)</label><select id="impDir"><option value="0">앞 (+x)</option><option value="1">뒤 (−x)</option><option value="2">왼쪽 (+y)</option><option value="3" selected>오른쪽 (−y)</option><option value="4">위 (+z)</option><option value="5">아래 (−z)</option><option value="6">랜덤</option></select></div>
+    <div class="row"><label for="impAt">작용점</label><select id="impAt"><option value="6">손 기준점</option><option value="4">손목 관절</option><option value="3">팔꿈치 관절</option></select></div>
+    <div class="btns"><button class="primary" id="btnImpact">충격 주기</button></div>
+    <div class="note">반-사인파 힘 (충격량 = 2·F·T/π). 3D에 빨간 화살표로 표시. 위치 제어와 임피던스 제어에서 비교해 보세요.</div>
+  </fieldset>
 
-  <h2>관절 토크 — 강체 vs 유연·백래시</h2>
-  <div class="legend"><i style="background:#8a8a8a"></i>강체 모델 출력축 토크<i style="background:#7d9cb8"></i>유연·백래시 모델 기어 토크<i style="background:#c8371e;height:1px"></i>URDF 토크 한계 · 회색 띠 = 충격 구간 · 주황 눈금 = 이 떨어짐(백래시 안)</div>
-  <div class="plots" id="plots"></div>
+  <fieldset><legend>중량</legend>
+    <div class="row"><label for="armMass">오른팔 자체 총질량 [kg]<br><span class="note" id="armMass0"></span></label><input id="armMass" type="number" step="0.1" min="0.1"></div>
+    <div class="row"><label for="payMass">손에 든 물체 질량 [kg]</label><input id="payMass" type="number" step="0.1" min="0" value="0"></div>
+    <div class="row"><label for="ox">물체 무게중심 x [m] <span class="note">손 좌표계</span></label><input id="ox" type="number" step="0.01" value="0.12"></div>
+    <div class="row"><label for="oy">물체 무게중심 y [m]</label><input id="oy" type="number" step="0.01" value="0"></div>
+    <div class="row"><label for="oz">물체 무게중심 z [m]</label><input id="oz" type="number" step="0.01" value="0"></div>
+    <div class="btns"><button class="primary" id="btnMass">적용</button></div>
+    <div class="note" id="massInfo"></div>
+  </fieldset>
 
-  <h2>상세</h2>
-  <div class="detail" id="detail"><div class="empty">계산 후 관절을 고르세요.</div></div>
+  <fieldset><legend>몸 자세 (골반 고정 · 오른팔 기준 몸통이 따라 움직임)</legend>
+    <div id="bodyJoints"></div>
+    <div class="btns"><button id="btnBodyZero">몸 자세 0으로</button><button id="btnBodyLean">허리 앞으로 20°</button><button id="btnLeftDown">왼팔 내림</button></div>
+    <div class="note">허리를 기울이면 오른팔에 대한 중력 방향이 바뀌어 토크가 달라집니다. 다리는 골반 고정이라 표시만(0 rad).</div>
+  </fieldset>
 
-  <h2>계산 방법 · 한계</h2>
-  <div class="card note" style="font-size:11.5px">
-    <b>① 강체 동역학</b> — 토크–각변위 시뮬레이터와 같은 계산(dynamics.js): 자세에 1 s 정착 → 충격 펄스 → 관절 출력축 토크. 이 페이지에서는 충돌 판정을 끕니다.<br>
-    <b>② 출력 베어링 하중</b> — 같은 상태로 뉴턴–오일러를 다시 풀어, 관절마다 자식 쪽(팔 끝 방향 전체)이 주는 힘·모멘트를 관절축 기준으로 나눔: 축방향 Fa, 반경 Fr, 기울임 모멘트 M. 정등가 하중 P0 = Fr + 2000·M/dp + 0.44·Fa (설계실 outputBearing과 같은 식).<br>
-    <b>③ 유연·백래시</b> — 관절마다 따로: 모터 쪽 관성 Jm – 비틀림 스프링 K(백래시 ±δ 안에서는 힘 0) – 링크 쪽 관성 Jl(다른 관절을 잠근 상태의 유효관성). 링크 쪽 하중은 강체 결과에서 자기 관성 몫을 뺀 값, 모터는 강체 구동 토크를 피드포워드로 쓰고 모터 각을 PD로 추종(토크 한계 = URDF effort). 기어 토크의 피크가 백래시를 넘어 이빨이 다시 부딪히는 순간의 하중입니다.<br>
-    <b>④ 판정</b> — 기어: 피크 토크에서 설계실 엔진의 정적 강도(ISO 6336, 모든 맞물림의 접촉·굽힘 중 가장 낮은 여유). 유성 베어링: 그 토크의 핀 하중 대비 C0. 출력 베어링: 최대 P0 대비 C0.<br>
-    <b>한계</b> — 결과는 "어느 관절의 어느 부품이 먼저 한계에 닿는가"의 순위용입니다. 관절 사이 유연 연성(한 관절의 떨림이 다른 관절로 전달), 이빨 접촉 FEM, 피로 누적은 들어 있지 않고, 출력 베어링 하중은 강체 값입니다. 감속기 제원 A·B·C는 설계실 추천 엔진으로 만든 예시이며 H2-X 실물 제원이 아닙니다. 절대값은 시험으로 확인해야 합니다.
+  <fieldset><legend>충돌</legend>
+    <label class="chk"><input type="checkbox" id="col" checked> 오른팔·손 하중 ↔ 몸(몸통·골반·다리·머리·왼팔) 및 오른팔 자기충돌</label>
+    <label class="chk"><input type="checkbox" id="showCol"> 충돌 형상(구) 보기</label>
+    <div class="note" id="colInfo"></div>
+  </fieldset>
+
+  <fieldset><legend>추종 · 구동부(액추에이터) 가정</legend>
+    <div class="row"><label for="vmax">최대 속도 [°/s]</label><input id="vmax" type="number" value="60" min="1"></div>
+    <div class="row"><label for="amax">최대 가속도 [°/s²]</label><input id="amax" type="number" value="240" min="1"></div>
+    <div class="note" style="margin:6px 0 3px">관절별 구동부 (URDF에 없는 값 · 가정, 바꿔서 [적용])<br>J: 로터 반사관성 = 로터관성×감속비² · b: 점성 마찰 · τc: 쿨롱 마찰</div>
+    <table class="st act" id="actTable"></table>
+    <label class="chk"><input type="checkbox" id="ff" checked> 모델 기반 피드포워드 (중력·관성·마찰 보상)</label>
+    <label class="chk"><input type="checkbox" id="autoStop" checked> 토크 한계 0.3 s 이상 지속 시 자동 일시정지</label>
+    <label class="chk"><input type="checkbox" id="yfix"> 그래프 y축을 토크 한계로 고정</label>
+    <div class="btns"><button class="primary" id="btnCtrl">적용</button><button id="btnActDef">구동부 기본값</button><button id="btnActZero">구동부 0 (강체 이상값)</button></div>
+  </fieldset>
+
+  <div class="btns">
+    <button id="btnPause">일시정지</button>
+    <button id="btnClear">기록 초기화</button>
+    <button id="btnCsv">CSV 저장</button>
+    <button id="btnStatic">정적 시험 0 / 1 kg</button>
   </div>
+  <div id="status">불러오는 중…</div>
+  <div id="staticOut"></div>
+  <div class="note" id="srcInfo" style="margin-top:10px"></div>
+</aside>
+<main>
+  <div id="view"><div id="loading">3D 모델 불러오는 중…</div><div class="hint">드래그: 회전 · 오른쪽 드래그: 이동 · 휠: 확대 · 관절 고리 색 = 감속기 여유 (초록 ≥ 2 · 노랑 1.5–2 · 주황 1–1.5 · 빨강 &lt; 1, 0.5 s 유지)</div></div>
+  <div class="rz">
+    <h2>감속기 실시간 판정 — 여유 = 안전율 ÷ 목표 (1 미만 = 부족) · 최저값은 [피크 초기화] 이후</h2>
+    <div id="lvTable"></div>
+    <div class="note" id="lvNote"></div>
+    <div id="lvPlots"></div>
+    <div class="note">그래프: 최근 3 s · <span style="color:#8a8a8a">회색</span> 강체 출력축 토크 · <span style="color:#7d9cb8">파랑</span> 유연·백래시 모델 기어 토크 · <span style="color:#ff5a45">┄</span> URDF 토크 한계 · <span style="color:#c9962a">주황 눈금</span> 이 떨어짐(백래시 안) · 배경 붉은 띠 = 충격 외력 작용<br>
+    계산: 관절마다 모터 Jm – 비틀림 강성 K(백래시 ±δ에서는 0) – 링크 Jl(다른 관절 잠금 유효관성)을 1 ms마다 잘게 나눠 적분. 기어 = 설계실 엔진 정적 강도(ISO 6336, 토크별 표 보간), 유성 베어링 = 핀 하중/C0, 출력 베어링 = C0 / (Fr + 2000·M/dp + 0.44·Fa) — 관절 반력은 뉴턴–오일러(충격 외력 포함, 몸 접촉력 제외).
+    관절 사이 유연 연성·이빨 FEM·피로 누적 없음. A·B·C는 설계실 추천 엔진 예시 제원(H2-X 실물 아님). 순위 비교용이며 절대값은 시험으로 확인.</div>
+    <h2 style="margin-top:14px">토크–각변위 (기본 시뮬레이터와 같음)</h2>
+  </div>
+  <div id="plots"></div>
 </main>
 </div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="dynamics.js?v=3"></script>
+<script src="app.js?v=4"></script>
 <script src="vendor/pgd/carrier-geometry.js?v=1"></script>
 <script src="vendor/pgd/engine.js?v=1"></script>
 <script src="reducer_presets.js?v=1"></script>
-<script src="reducer_core.js?v=1"></script>
-<script src="reducer.js?v=1"></script>
+<script src="reducer_core.js?v=2"></script>
+<script src="reducer_live.js?v=1"></script>
 </body>
 </html>
