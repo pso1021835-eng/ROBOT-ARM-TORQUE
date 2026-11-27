@@ -180,7 +180,13 @@
     sets = asg.map((a, j) => {
       try {
         const s = window.ReducerGears.build(kinds[a.kind].info, kinds[a.kind].D);
-        s.outer.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...model.joints[j].axis).normalize());
+        // 출력(캐리어·출력 베어링, 기어세트 +z 끝)은 자식 링크 쪽, 입력(1단 썬·모터)은 부모 쪽을 향하게:
+        // 자식 링크가 관절축의 어느 방향에 있는지(다음 관절 위치, 없으면 무게중심을 축에 투영한 부호)로 기어세트 z를 ±축에 맞춤
+        const jn = model.joints[j], nx = model.joints[j + 1], dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+        let side = nx ? dot(jn.axis, nx.xyz) : 0;
+        if (Math.abs(side) < 1e-3) side = dot(jn.axis, jn.com);
+        s.sign = side < 0 ? -1 : 1;
+        s.outer.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...jn.axis).normalize().multiplyScalar(s.sign));
         s.outer.visible = $("gsShow").checked;
         s.outer.traverse((o) => { o.userData.reducer = true; o.renderOrder = 3; });
         H.linkGroups[j].add(s.outer);
@@ -273,7 +279,7 @@
       const t = sim.t;
       sets.forEach((s, j) => {
         if (!s) return;
-        s.pose(sim.q[j]);
+        s.pose(s.sign * sim.q[j]);   // 기어세트 z가 −축이면 관절 회전 방향도 반대로
         const st = live.st[j], jp = live.joints[j];
         if (!st || !st.now) return;
         // 부품별 현재 여유 → 0.5 s 동안 최저값 유지 후 색
