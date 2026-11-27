@@ -46,6 +46,20 @@ index.html을 연 화면이 곧 시뮬레이터 (GitHub Pages: main / root).
 - 임피던스(마찰 0): 무외력 유지 < 1 mm, 20 N 일정 외력에 변위 = F/K (24.3 vs 25.0 mm), 제거 후 복귀
 - 충격 150 N·30 ms: 두 방식 모두 발산 없이 복귀, 10 N 지속 외력 변위 위치 6.4 mm / 임피던스 31 mm
 
+## 관절 감속기 배치 · 충격 판정 (`reducer.html`, 별도 페이지)
+기존 시뮬레이터는 그대로 두고, 같은 동역학으로 관절마다 유성감속기를 넣어 충격 때 기어 이빨·베어링 여유를 비교한다.
+- `reducer_core.js` (브라우저·Node 공용): ① 강체 계산(dynamics.js Sim, 충돌 끔) → ② 관절 반력(뉴턴–오일러, 외력 포함)을
+  관절축 기준 Fa·Fr·M으로 분해 → ③ 관절별 2관성 유연 모델(모터 Jm – 비틀림 강성 K + 백래시 – 링크 Jl, 모터는 강체 구동 토크
+  피드포워드 + PD, 토크 한계 URDF effort) → ④ 판정: 기어 = 설계실 엔진 정적 강도(ISO 6336), 유성 베어링 = 핀 하중/C0,
+  출력 베어링 = C0/P0, P0 = Fr + 2000·M/dp + 0.44·Fa
+- 감속기 계산 엔진: `vendor/pgd/` = [PLANETARY-GEAR](https://github.com/pso1021835-eng/PLANETARY-GEAR) @ `26b4b50` 의 `engine.js`, `carrier-geometry.js` 복사본
+- 감속기 예시 제원 A·B·C (`reducer_presets.js`): 설계실 추천 엔진(recommend.js runSync)으로 자동 생성
+  (A Ø80×42 i≈22.5 · B Ø66×36 i≈20 · C Ø52×30 i≈16). **H2-X 실물 제원 아님.** 화면에서 설계 JSON을 붙여 넣어 바꿀 수 있음
+- 모터 쪽 반사관성 Jm 기본값: A 0.0251(unitree_rl_lab N7520-22.5), C 0.0036(N5020-16), B 0.012(공개값 없음 → 가정)
+- 한계: 관절 사이 유연 연성·이빨 접촉 FEM·피로 누적 없음, 출력 베어링 하중은 강체 값. 결과는 "먼저 한계에 닿는 부품" 순위용
+- 검증 `node reducer_test.js`: 마찰 0에서 반력 축 토크 = 시뮬레이터 출력축 토크(1e-9), 정지 반력 = 무게, 예시 제원 감속비·정적 한계,
+  한계 토크에서 판정 여유 = 1, 백래시 0·고강성 → 강체와 같음, 백래시가 있으면 이 떨어짐 발생
+
 ## 모델 재생성
 `python tools/make_model.py <unitree_ros>/robots/h2x_description/h2x.urdf`
 (로컬 MuJoCo 버전 `h2x_arm_sim`의 `urdf_model.py` 필요: 환경변수 `H2X_SIM_DIR`)
